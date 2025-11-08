@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-/* ---------------- Typewriter (no cursor) ---------------- */
+/* ---------------- Typewriter (no cursor) — used ONLY for the title ---------------- */
 function useTypewriter(
   text: string,
   opts?: { speed?: number; startDelay?: number }
@@ -137,9 +137,9 @@ export default function Dashboard() {
   const TAGLINE =
     'Your personal AI coach for sustainable living and holistic wellness. Track habits, earn points, and transform your lifestyle one task at a time.';
 
-  /* ---- Typewriter timings (only title + tagline) ---- */
-  const TITLE_SPEED = 26; // ms per character
-  const TITLE_START = 400; // initial delay before typing starts (ms)
+  /* ---- Typewriter timings (ONLY title) ---- */
+  const TITLE_SPEED = 45; // ms per character
+  const TITLE_START = 400; // ms delay before typing starts
 
   const titleLine1Text = 'Live Better,';
   const titleLine2Text = 'Live Greener';
@@ -150,18 +150,10 @@ export default function Dashboard() {
   });
 
   const titleLine2Start =
-    TITLE_START + titleLine1Text.length * TITLE_SPEED + 350; // small pause before line 2
+    TITLE_START + titleLine1Text.length * TITLE_SPEED + 350; // pause before line 2
   const titleLine2 = useTypewriter(titleLine2Text, {
     speed: TITLE_SPEED,
     startDelay: titleLine2Start,
-  });
-
-  const TAG_SPEED = 18;
-  const tagStart =
-    titleLine2Start + titleLine2Text.length * TITLE_SPEED + 500; // start after title finishes
-  const typedTagline = useTypewriter(TAGLINE, {
-    speed: TAG_SPEED,
-    startDelay: tagStart,
   });
 
   return (
@@ -245,13 +237,14 @@ export default function Dashboard() {
             <span>{titleLine2}</span>
           </motion.h1>
 
+          {/* Tagline now FADES IN (no typing) */}
           <motion.p
             className="mx-auto mt-5 max-w-2xl text-balance text-lg text-slate-700"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, ease: 'easeOut', delay: DELAYS.hero + 0.1 }}
           >
-            {typedTagline}
+            {TAGLINE}
           </motion.p>
         </div>
 
