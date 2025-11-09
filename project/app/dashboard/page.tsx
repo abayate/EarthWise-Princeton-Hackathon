@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
@@ -16,9 +16,14 @@ import {
   History,
   Info,
   RotateCcw,
+  Sparkles,
+  Lightbulb,
+  CheckCircle2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { STORAGE_KEYS, celebrateIfEnabled, playClickIfEnabled } from '@/lib/earthwise';
 
+/* ---------------- Types ---------------- */
 type TaskDetails = {
   about: string;
   health: string;
@@ -34,27 +39,38 @@ type Task = {
   details?: TaskDetails;
 };
 
-type DailyLog = Record<string, boolean>; // YYYY-MM-DD -> completed?
-type ViewMode = 'focus' | 'browse';      // navigation mode
+type DailyLog = Record<string, boolean>;
+type ViewMode = 'focus' | 'browse';
 
-// ---------- Config ----------
-const BASE_POINTS = 240;                 // baseline points
-const BASE_TOTAL_TASKS = 12;             // internal starting total
-const DAILY_COMPLETION_THRESHOLD = 1;    // tasks needed to count the day
+/* -------- New: snapshot (entry) types & constants -------- */
+type SnapshotTask = Pick<Task, 'id' | 'label' | 'points' | 'completed'>;
+
+type DayEntry = {
+  id: string;
+  date: string; // YYYY-MM-DD
+  ts: number;   // epoch ms
+  totals: {
+    points: number;
+    completedCount: number;
+    healthCompleted: number;
+    ecoCompleted: number;
+  };
+  health: SnapshotTask[];
+  eco: SnapshotTask[];
+  // optional metadata about what triggered the save
+  action?: { section: 'health' | 'eco' | 'rollover'; taskId?: string; completed?: boolean };
+};
+
+const ENTRIES_KEY = 'EW_ENTRIES_V1';
+const ENTRIES_LIMIT = 180; // keep ~6 months of daily snapshots by default
+
+/* ---------------- Scoring / UI constants ---------------- */
+const BASE_POINTS = 240;
+const BASE_TOTAL_TASKS = 12;
+const DAILY_COMPLETION_THRESHOLD = 1;
 const RECENT_LIMIT = 5;
 
-const STORAGE_KEYS = {
-  HEALTH: 'ew_healthTasks_v1',
-  ECO: 'ew_ecoTasks_v1',
-  LOG: 'ew_dailyLog_v1',
-  LAST_OPEN: 'ew_lastOpenDate_v1',
-  RECENT_HEALTH: 'ew_recentHealth_v1',
-  RECENT_ECO: 'ew_recentEco_v1',
-  MODE_HEALTH: 'ew_modeHealth_v1',
-  MODE_ECO: 'ew_modeEco_v1',
-} as const;
-
-// ---------- Details Library (per id) ----------
+/* ---- Details libraries ---- */
 const HEALTH_DETAILS: Record<string, TaskDetails> = {
   'yoga-20': {
     about: 'A 20-minute bodyweight yoga flow done at home.',
@@ -62,7 +78,7 @@ const HEALTH_DETAILS: Record<string, TaskDetails> = {
       'Improves flexibility and mobility, reduces stress via parasympathetic activation, and supports core strength and balance.',
     environment:
       'Home bodyweight practice has near-zero energy use and avoids travel emissions to a gym.',
-    tips: ['Use a mat or towel; focus on breath cadence (4-6s inhales/exhales).'],
+    tips: ['Use a mat or towel; focus on breath cadence (4–6s inhales/exhales).'],
   },
   'strength-15': {
     about: 'Quick 15-minute compound strength set (push/pull/legs).',
@@ -91,7 +107,7 @@ const HEALTH_DETAILS: Record<string, TaskDetails> = {
   'steps-8000': {
     about: 'Accumulate at least 8,000 steps across the day.',
     health:
-      'Associated with lower all-cause mortality and better cardiometabolic health; breaks up sedentary time.',
+      'Associated with lower all-ccause mortality and better cardiometabolic health; breaks up sedentary time.',
     environment:
       'Short errand walks can replace some car trips, indirectly reducing local emissions.',
     tips: ['Park farther, take stairs, do 5-minute movement breaks each hour.'],
@@ -132,8 +148,7 @@ const HEALTH_DETAILS: Record<string, TaskDetails> = {
     about: 'Three posture checks spread through the day.',
     health:
       'Reduces neck/shoulder strain and headaches; improves breathing efficiency.',
-    environment:
-      'No impact.',
+    environment: 'No impact.',
     tips: ['Stack ears over shoulders; set phone reminders for check-ins.'],
   },
 };
@@ -157,26 +172,21 @@ const ECO_DETAILS: Record<string, TaskDetails> = {
   },
   'short-shower-5': {
     about: 'Cap showers at ~5 minutes.',
-    health:
-      'Less skin dryness; preserves natural oils.',
-    environment:
-      'Saves water and the energy required to heat it.',
+    health: 'Less skin dryness; preserves natural oils.',
+    environment: 'Saves water and the energy required to heat it.',
     tips: ['Play a 5-minute song; install a low-flow showerhead.'],
   },
   'unplug-standby': {
     about: 'Unplug or switch off idle electronics.',
-    health:
-      'Less cable clutter and heat; marginally improves indoor comfort.',
+    health: 'Less cable clutter and heat; marginally improves indoor comfort.',
     environment:
       'Cuts standby (“vampire”) power draw to reduce electricity use.',
     tips: ['Use a power strip with a single off switch.'],
   },
   'thermostat-1deg': {
     about: 'Adjust thermostat ±1°F (±0.5°C).',
-    health:
-      'Still comfortable; supports thermal habituation.',
-    environment:
-      'Every degree can save heating/cooling energy over time.',
+    health: 'Still comfortable; supports thermal habituation.',
+    environment: 'Every degree can save heating/cooling energy over time.',
     tips: ['Pair with sealing drafts and wearing layers.'],
   },
   'reusable-mug-bottle': {
@@ -205,8 +215,7 @@ const ECO_DETAILS: Record<string, TaskDetails> = {
   },
   'public-transit-carpool': {
     about: 'Use transit or carpool for a trip.',
-    health:
-      'Often leads to more walking, which boosts daily activity.',
+    health: 'Often leads to more walking, which boosts daily activity.',
     environment:
       'Fewer single-occupancy vehicle miles → lower per-person emissions.',
     tips: ['Batch errands; coordinate rides with coworkers or classmates.'],
@@ -221,12 +230,11 @@ const ECO_DETAILS: Record<string, TaskDetails> = {
   },
 };
 
-// Helper to attach details to tasks by id (for migration / saved lists)
+/* ---- helpers ---- */
 function attachDetails(tasks: Task[], map: Record<string, TaskDetails>): Task[] {
-  return tasks.map(t => (map[t.id] ? { ...t, details: map[t.id] } : t));
+  return tasks.map((t) => (map[t.id] ? { ...t, details: map[t.id] } : t));
 }
 
-// ---------- Date helpers (local time) ----------
 function dateKey(d: Date = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -237,14 +245,11 @@ function addDays(d: Date, delta: number) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
 }
 
-// Streak ends today if today is completed, otherwise ends yesterday.
 function computeStreak(log: DailyLog): number {
   const today = new Date();
   let streak = 0;
-
   const todayKey = dateKey(today);
   let cursor = new Date(today);
-
   if (log[todayKey]) {
     streak += 1;
     cursor = addDays(cursor, -1);
@@ -258,7 +263,6 @@ function computeStreak(log: DailyLog): number {
   return streak;
 }
 
-// Keep the daily log small
 function pruneLog(log: DailyLog, keepDays = 60): DailyLog {
   const today = new Date();
   const kept: DailyLog = {};
@@ -269,68 +273,133 @@ function pruneLog(log: DailyLog, keepDays = 60): DailyLog {
   return kept;
 }
 
-// ---------- Navigation helpers ----------
 function findNextIncompleteIndex(tasks: Task[], startIdx: number, direction: 1 | -1 = 1): number {
   if (!tasks.length) return 0;
-  // First check from the next task onwards
   for (let step = 0; step <= tasks.length; step++) {
     const i = (startIdx + step * direction + tasks.length) % tasks.length;
     if (!tasks[i].completed) return i;
   }
-  // If no incomplete tasks found after current index, keep current
   return startIdx;
 }
-
 function nextSequentialIndex(length: number, currentIdx: number, direction: 1 | -1) {
   if (length === 0) return 0;
   return (currentIdx + direction + length) % length;
 }
-
 function indexById(tasks: Task[], id: string) {
-  return Math.max(0, tasks.findIndex(t => t.id === id));
+  return Math.max(0, tasks.findIndex((t) => t.id === id));
 }
-
-// Keep a simple MRU list of recent completions
 function pushRecent(ids: string[], id: string, limit = RECENT_LIMIT) {
-  const next = [id, ...ids.filter(x => x !== id)];
+  const next = [id, ...ids.filter((x) => x !== id)];
   return next.slice(0, limit);
 }
 
+/* ---- accent utils for highlights ---- */
+function accent(section: 'health' | 'eco') {
+  return section === 'health'
+    ? {
+        dotActive: 'bg-pink-600',
+        dotDone: 'bg-pink-300 hover:bg-pink-400',
+        progress: 'bg-pink-500',
+        ring: 'ring-2 ring-pink-300/70',
+        chipBg: 'bg-pink-50',
+        chipText: 'text-pink-700',
+        headerBar: 'from-pink-500/90 to-rose-400/90',
+        badgeBg: 'bg-pink-100',
+        badgeText: 'text-pink-700',
+        buttonActive: 'bg-pink-600 hover:bg-pink-600 text-white',
+      }
+    : {
+        dotActive: 'bg-green-600',
+        dotDone: 'bg-green-300 hover:bg-green-400',
+        progress: 'bg-green-600',
+        ring: 'ring-2 ring-green-300/70',
+        chipBg: 'bg-green-50',
+        chipText: 'text-green-700',
+        headerBar: 'from-green-600/90 to-emerald-500/90',
+        badgeBg: 'bg-green-100',
+        badgeText: 'text-green-700',
+        buttonActive: 'bg-green-600 hover:bg-green-600 text-white',
+      };
+}
+
+/* -------- New: snapshot helpers -------- */
+const uuid = () =>
+  (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? (crypto as any).randomUUID()
+    : `e_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+
+function buildEntry(
+  health: Task[],
+  eco: Task[],
+  dateOverride?: string,
+  action?: DayEntry['action']
+): DayEntry {
+  const completedCount = [...health, ...eco].filter((t) => t.completed).length;
+  const points = [...health, ...eco].reduce((s, t) => s + (t.completed ? t.points : 0), BASE_POINTS);
+
+  return {
+    id: uuid(),
+    date: dateOverride ?? dateKey(),
+    ts: Date.now(),
+    totals: {
+      points,
+      completedCount,
+      healthCompleted: health.filter((t) => t.completed).length,
+      ecoCompleted: eco.filter((t) => t.completed).length,
+    },
+    health: health.map(({ id, label, points, completed }) => ({ id, label, points, completed })),
+    eco: eco.map(({ id, label, points, completed }) => ({ id, label, points, completed })),
+    action,
+  };
+}
+
+function saveEntryToStorage(entry: DayEntry) {
+  try {
+    const raw = localStorage.getItem(ENTRIES_KEY);
+    const list: DayEntry[] = raw ? (JSON.parse(raw) as DayEntry[]) : [];
+    list.unshift(entry);
+    if (list.length > ENTRIES_LIMIT) list.length = ENTRIES_LIMIT;
+    localStorage.setItem(ENTRIES_KEY, JSON.stringify(list));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+/* ===========================
+   Dashboard Page
+   =========================== */
 export default function DashboardPage() {
-  // ---------- Shared defaults (must match /tasks) ----------
   const defaultHealth: Task[] = attachDetails(
     [
-      { id: 'yoga-20',            label: '20-minute yoga',                      points: 20, completed: false },
-      { id: 'strength-15',        label: '15-minute strength training',         points: 25, completed: false },
-      { id: 'intervals-10',       label: '10-minute intervals',                 points: 20, completed: false },
-      { id: 'healthy-breakfast',  label: 'Healthy breakfast (protein + fruit)', points: 15, completed: false },
-      { id: 'steps-8000',         label: '8,000 steps',                         points: 25, completed: false },
-      { id: 'sleep-8h',           label: 'Sleep 8 hours',                       points: 30, completed: false },
-      { id: 'screen-breaks',      label: 'Screen breaks every hour',            points: 10, completed: false },
-      { id: 'journaling-5',       label: '5-minute journaling',                 points: 10, completed: false },
-      { id: 'breathing-3',        label: '3-minute breathing exercise',         points: 10, completed: false },
-      { id: 'posture-x3',         label: 'Posture check ×3',                    points: 5,  completed: false },
+      { id: 'yoga-20', label: '20-minute yoga', points: 20, completed: false },
+      { id: 'strength-15', label: '15-minute strength training', points: 25, completed: false },
+      { id: 'intervals-10', label: '10-minute intervals', points: 20, completed: false },
+      { id: 'healthy-breakfast', label: 'Healthy breakfast (protein + fruit)', points: 15, completed: false },
+      { id: 'steps-8000', label: '8,000 steps', points: 25, completed: false },
+      { id: 'sleep-8h', label: 'Sleep 8 hours', points: 30, completed: false },
+      { id: 'screen-breaks', label: 'Screen breaks every hour', points: 10, completed: false },
+      { id: 'journaling-5', label: '5-minute journaling', points: 10, completed: false },
+      { id: 'breathing-3', label: '3-minute breathing exercise', points: 10, completed: false },
+      { id: 'posture-x3', label: 'Posture check ×3', points: 5, completed: false },
     ],
     HEALTH_DETAILS
   );
-
   const defaultEco: Task[] = attachDetails(
     [
-      { id: 'meatless-meal',          label: 'Meatless meal',                         points: 25, completed: false },
-      { id: 'cold-wash-laundry',      label: 'Cold-wash laundry',                     points: 15, completed: false },
-      { id: 'short-shower-5',         label: '5-minute shower',                       points: 15, completed: false },
-      { id: 'unplug-standby',         label: 'Unplug idle devices',                   points: 10, completed: false },
-      { id: 'thermostat-1deg',        label: 'Thermostat ±1°F adjustment',            points: 15, completed: false },
-      { id: 'reusable-mug-bottle',    label: 'Bring reusable mug/bottle',             points: 10, completed: false },
-      { id: 'recycle-sort',           label: 'Sort & recycle properly',               points: 10, completed: false },
-      { id: 'compost-scraps',         label: 'Compost food scraps',                   points: 20, completed: false },
-      { id: 'public-transit-carpool', label: 'Use public transit or carpool',         points: 30, completed: false },
-      { id: 'no-single-use-plastic',  label: 'No single-use plastic today',           points: 25, completed: false },
+      { id: 'meatless-meal', label: 'Meatless meal', points: 25, completed: false },
+      { id: 'cold-wash-laundry', label: 'Cold-wash laundry', points: 15, completed: false },
+      { id: 'short-shower-5', label: '5-minute shower', points: 15, completed: false },
+      { id: 'unplug-standby', label: 'Unplug idle devices', points: 10, completed: false },
+      { id: 'thermostat-1deg', label: 'Thermostat ±1°F adjustment', points: 15, completed: false },
+      { id: 'reusable-mug-bottle', label: 'Bring a reusable mug/bottle', points: 10, completed: false },
+      { id: 'recycle-sort', label: 'Sort & recycle properly', points: 10, completed: false },
+      { id: 'compost-scraps', label: 'Compost food scraps', points: 20, completed: false },
+      { id: 'public-transit-carpool', label: 'Use public transit or carpool', points: 30, completed: false },
+      { id: 'no-single-use-plastic', label: 'No single-use plastic today', points: 25, completed: false },
     ],
     ECO_DETAILS
   );
 
-  // ---------- State ----------
   const [healthTasks, setHealthTasks] = useState<Task[]>(defaultHealth);
   const [ecoTasks, setEcoTasks] = useState<Task[]>(defaultEco);
   const [dailyLog, setDailyLog] = useState<DailyLog>({});
@@ -338,14 +407,25 @@ export default function DashboardPage() {
   const [healthIndex, setHealthIndex] = useState<number>(0);
   const [ecoIndex, setEcoIndex] = useState<number>(0);
 
-  // DEFAULT IS NOW 'browse'
+  // Indices ref (avoid stale closures)
+  const healthIndexRef = useRef(0);
+  const ecoIndexRef = useRef(0);
+  useEffect(() => { healthIndexRef.current = healthIndex; }, [healthIndex]);
+  useEffect(() => { ecoIndexRef.current = ecoIndex; }, [ecoIndex]);
+
+  // New: keep *task arrays* in refs so snapshot uses fresh other-section state
+  const healthTasksRef = useRef<Task[]>(defaultHealth);
+  const ecoTasksRef = useRef<Task[]>(defaultEco);
+  useEffect(() => { healthTasksRef.current = healthTasks; }, [healthTasks]);
+  useEffect(() => { ecoTasksRef.current = ecoTasks; }, [ecoTasks]);
+
   const [healthMode, setHealthMode] = useState<ViewMode>('browse');
   const [ecoMode, setEcoMode] = useState<ViewMode>('browse');
 
   const [recentHealth, setRecentHealth] = useState<string[]>([]);
   const [recentEco, setRecentEco] = useState<string[]>([]);
 
-  // ---------- Load persisted state ----------
+  /* ---- load persisted ---- */
   useEffect(() => {
     try {
       const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
@@ -357,7 +437,6 @@ export default function DashboardPage() {
       const hmRaw = localStorage.getItem(STORAGE_KEYS.MODE_HEALTH);
       const emRaw = localStorage.getItem(STORAGE_KEYS.MODE_ECO);
 
-      // Attach details even if old saves lacked them
       const h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : defaultHealth;
       const e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : defaultEco;
 
@@ -365,14 +444,17 @@ export default function DashboardPage() {
       const rh = rhRaw ? (JSON.parse(rhRaw) as string[]) : [];
       const re = reRaw ? (JSON.parse(reRaw) as string[]) : [];
 
-      // DEFAULT TO BROWSE WHEN NOTHING IS SAVED
       const hm: ViewMode = hmRaw === 'focus' ? 'focus' : 'browse';
       const em: ViewMode = emRaw === 'focus' ? 'focus' : 'browse';
 
       const todayK = dateKey();
 
+      // New: if day rolled over, snapshot yesterday's final state before resetting
       if (lastOpenRaw && lastOpenRaw !== todayK) {
-        const reset = (tasks: Task[]) => tasks.map(t => ({ ...t, completed: false }));
+        const rolloverEntry = buildEntry(h, e, lastOpenRaw, { section: 'rollover' });
+        saveEntryToStorage(rolloverEntry);
+
+        const reset = (tasks: Task[]) => tasks.map((t) => ({ ...t, completed: false }));
         setHealthTasks(reset(h));
         setEcoTasks(reset(e));
         setHealthIndex(0);
@@ -399,7 +481,6 @@ export default function DashboardPage() {
       setEcoIndex(0);
       setRecentHealth([]);
       setRecentEco([]);
-      // DEFAULT TO BROWSE ON ERROR TOO
       setHealthMode('browse');
       setEcoMode('browse');
       localStorage.setItem(STORAGE_KEYS.LAST_OPEN, dateKey());
@@ -407,17 +488,30 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Clamp indices if list sizes change
+  // Align once on first render so we start on an incomplete item if needed
+  const didInitAlignRef = useRef(false);
   useEffect(() => {
-    setHealthIndex(i => (healthTasks.length ? ((i % healthTasks.length) + healthTasks.length) % healthTasks.length : 0));
+    if (didInitAlignRef.current) return;
+    if (healthTasks.length) alignToNextIncompleteIfNeeded('health');
+    if (ecoTasks.length) alignToNextIncompleteIfNeeded('eco');
+    didInitAlignRef.current = true;
+  }, [healthTasks, ecoTasks]);
+
+  /* ---- clamp indices ---- */
+  useEffect(() => {
+    setHealthIndex((i) =>
+      healthTasks.length ? ((i % healthTasks.length) + healthTasks.length) % healthTasks.length : 0
+    );
   }, [healthTasks.length]);
   useEffect(() => {
-    setEcoIndex(i => (ecoTasks.length ? ((i % ecoTasks.length) + ecoTasks.length) % ecoTasks.length : 0));
+    setEcoIndex((i) =>
+      ecoTasks.length ? ((i % ecoTasks.length) + ecoTasks.length) % ecoTasks.length : 0
+    );
   }, [ecoTasks.length]);
 
-  // ---------- Derived values ----------
+  /* ---- derived ---- */
   const completedCountToday = useMemo(
-    () => [...healthTasks, ...ecoTasks].filter(t => t.completed).length,
+    () => [...healthTasks, ...ecoTasks].filter((t) => t.completed).length,
     [healthTasks, ecoTasks]
   );
   const todaysCompleted = useMemo(
@@ -440,26 +534,43 @@ export default function DashboardPage() {
 
   const currentStreak = useMemo(() => computeStreak(dailyLog), [dailyLog]);
 
-  const healthCompleted = healthTasks.filter(t => t.completed).length;
-  const ecoCompleted = ecoTasks.filter(t => t.completed).length;
+  const healthCompleted = healthTasks.filter((t) => t.completed).length;
+  const ecoCompleted = ecoTasks.filter((t) => t.completed).length;
   const healthAllDone = healthTasks.length > 0 && healthCompleted === healthTasks.length;
   const ecoAllDone = ecoTasks.length > 0 && ecoCompleted === ecoTasks.length;
 
-  // ---------- Persist tasks + modes + recents ----------
+  /* ---- cross-tab + same-window sync ---- */
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.HEALTH) {
-        const newTasks = e.newValue ? JSON.parse(e.newValue) : defaultHealth;
-        setHealthTasks(attachDetails(newTasks, HEALTH_DETAILS));
-      } else if (e.key === STORAGE_KEYS.ECO) {
-        const newTasks = e.newValue ? JSON.parse(e.newValue) : defaultEco;
-        setEcoTasks(attachDetails(newTasks, ECO_DETAILS));
+      if (e.key === STORAGE_KEYS.HEALTH && e.newValue) {
+        setHealthTasks(attachDetails(JSON.parse(e.newValue), HEALTH_DETAILS));
+      } else if (e.key === STORAGE_KEYS.ECO && e.newValue) {
+        setEcoTasks(attachDetails(JSON.parse(e.newValue), ECO_DETAILS));
+      } else if (e.key === STORAGE_KEYS.LOG && e.newValue) {
+        setDailyLog(pruneLog(JSON.parse(e.newValue)));
       }
     };
     window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+
+    const handleCustom = (e: Event) => {
+      const ce = e as CustomEvent<{ key?: string; value?: string }>;
+      const { key, value } = ce.detail || {};
+      if (!key || !value) return;
+      if (key === STORAGE_KEYS.HEALTH) {
+        setHealthTasks(attachDetails(JSON.parse(value), HEALTH_DETAILS));
+      } else if (key === STORAGE_KEYS.ECO) {
+        setEcoTasks(attachDetails(JSON.parse(value), ECO_DETAILS));
+      }
+    };
+    window.addEventListener('taskStateUpdate', handleCustom as EventListener);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('taskStateUpdate', handleCustom as EventListener);
+    };
   }, []);
 
+  /* ---- persist simple states ---- */
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(healthTasks));
   }, [healthTasks]);
@@ -479,10 +590,10 @@ export default function DashboardPage() {
     localStorage.setItem(STORAGE_KEYS.MODE_ECO, ecoMode);
   }, [ecoMode]);
 
-  // ---------- Update today's completion in the daily log ----------
+  /* ---- daily log ---- */
   useEffect(() => {
     const todayK = dateKey();
-    setDailyLog(prev => {
+    setDailyLog((prev) => {
       const next = { ...prev, [todayK]: todaysCompleted };
       const pruned = pruneLog(next);
       localStorage.setItem(STORAGE_KEYS.LOG, JSON.stringify(pruned));
@@ -490,17 +601,17 @@ export default function DashboardPage() {
     });
   }, [todaysCompleted]);
 
-  // ---------- Mode switching with optional alignment ----------
+  /* ---- mode alignment ---- */
   function alignToNextIncompleteIfNeeded(section: 'health' | 'eco') {
     if (section === 'health') {
-      setHealthIndex(i => {
+      setHealthIndex((i) => {
         const list = healthTasks;
         if (!list.length) return 0;
         if (list[i]?.completed) return findNextIncompleteIndex(list, i, 1);
         return i;
       });
     } else {
-      setEcoIndex(i => {
+      setEcoIndex((i) => {
         const list = ecoTasks;
         if (!list.length) return 0;
         if (list[i]?.completed) return findNextIncompleteIndex(list, i, 1);
@@ -508,7 +619,6 @@ export default function DashboardPage() {
       });
     }
   }
-
   function setModeAndAlign(section: 'health' | 'eco', newMode: ViewMode) {
     if (section === 'health') {
       setHealthMode(newMode);
@@ -519,11 +629,12 @@ export default function DashboardPage() {
     }
   }
 
-  // ---------- Reset helpers (no confirmation) ----------
+  /* ---- resets ---- */
   function handleReset(section: 'health' | 'eco') {
     if (section === 'health') {
-      setHealthTasks(prev => {
-        const reset = prev.map(t => ({ ...t, completed: false }));
+      setHealthTasks((prev) => {
+        if (!prev.length) return prev;
+        const reset = prev.map((t) => ({ ...t, completed: false }));
         localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(reset));
         window.dispatchEvent(
           new CustomEvent('taskStateUpdate', {
@@ -535,8 +646,9 @@ export default function DashboardPage() {
       setRecentHealth([]);
       setHealthIndex(0);
     } else {
-      setEcoTasks(prev => {
-        const reset = prev.map(t => ({ ...t, completed: false }));
+      setEcoTasks((prev) => {
+        if (!prev.length) return prev;
+        const reset = prev.map((t) => ({ ...t, completed: false }));
         localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(reset));
         window.dispatchEvent(
           new CustomEvent('taskStateUpdate', {
@@ -548,23 +660,16 @@ export default function DashboardPage() {
       setRecentEco([]);
       setEcoIndex(0);
     }
-    // Points and totals update automatically via derived selectors.
   }
 
-  // ---------- Navigation (manual left/right always sequential) ----------
+  /* ---- navigation + toggle ---- */
   function next(section: 'health' | 'eco') {
-    if (section === 'health') {
-      setHealthIndex(i => nextSequentialIndex(healthTasks.length, i, 1));
-    } else {
-      setEcoIndex(i => nextSequentialIndex(ecoTasks.length, i, 1));
-    }
+    if (section === 'health') setHealthIndex((i) => nextSequentialIndex(healthTasks.length, i, 1));
+    else setEcoIndex((i) => nextSequentialIndex(ecoTasks.length, i, 1));
   }
   function prev(section: 'health' | 'eco') {
-    if (section === 'health') {
-      setHealthIndex(i => nextSequentialIndex(healthTasks.length, i, -1));
-    } else {
-      setEcoIndex(i => nextSequentialIndex(ecoTasks.length, i, -1));
-    }
+    if (section === 'health') setHealthIndex((i) => nextSequentialIndex(healthTasks.length, i, -1));
+    else setEcoIndex((i) => nextSequentialIndex(ecoTasks.length, i, -1));
   }
   function goTo(section: 'health' | 'eco', idx: number) {
     if (section === 'health') {
@@ -578,12 +683,12 @@ export default function DashboardPage() {
     else setEcoIndex(indexById(ecoTasks, id));
   }
 
-  // ---------- Complete/Undo with auto-advance ----------
+  // >>> SOUND + CONFETTI + SNAPSHOT (only when flipping to completed)
   function handleToggleAndAutoAdvance(section: 'health' | 'eco') {
     if (section === 'health') {
-      setHealthTasks(prev => {
+      setHealthTasks((prev) => {
         if (!prev.length) return prev;
-        const idx = healthIndex;
+        const idx = healthIndexRef.current;
         const current = prev[idx];
         if (!current) return prev;
         const wasCompleted = current.completed;
@@ -597,16 +702,29 @@ export default function DashboardPage() {
           })
         );
 
+        playClickIfEnabled();
+
+        // New: only snapshot when changing to "completed"
         if (!wasCompleted) {
-          setRecentHealth(old => pushRecent(old, current.id));
-          setHealthIndex(i => findNextIncompleteIndex(updated, i));
+          celebrateIfEnabled();
+          setRecentHealth((old) => pushRecent(old, current.id));
+
+          // Snapshot full state (health AFTER update, eco current)
+          const entry = buildEntry(updated, ecoTasksRef.current, undefined, {
+            section: 'health',
+            taskId: current.id,
+            completed: true,
+          });
+          saveEntryToStorage(entry);
+
+          setHealthIndex(() => findNextIncompleteIndex(updated, idx));
         }
         return updated;
       });
     } else {
-      setEcoTasks(prev => {
+      setEcoTasks((prev) => {
         if (!prev.length) return prev;
-        const idx = ecoIndex;
+        const idx = ecoIndexRef.current;
         const current = prev[idx];
         if (!current) return prev;
         const wasCompleted = current.completed;
@@ -620,22 +738,31 @@ export default function DashboardPage() {
           })
         );
 
+        playClickIfEnabled();
+
         if (!wasCompleted) {
-          setRecentEco(old => pushRecent(old, current.id));
-          setEcoIndex(i => findNextIncompleteIndex(updated, i));
+          celebrateIfEnabled();
+          setRecentEco((old) => pushRecent(old, current.id));
+
+          // Snapshot full state (eco AFTER update, health current)
+          const entry = buildEntry(healthTasksRef.current, updated, undefined, {
+            section: 'eco',
+            taskId: current.id,
+            completed: true,
+          });
+          saveEntryToStorage(entry);
+
+          setEcoIndex(() => findNextIncompleteIndex(updated, idx));
         }
         return updated;
       });
     }
   }
 
-  const currentHealthTask = healthTasks.length ? healthTasks[healthIndex] : undefined;
-  const currentEcoTask = ecoTasks.length ? ecoTasks[ecoIndex] : undefined;
-
-  // ---------- UI helpers ----------
   const streakLabel = `${currentStreak} day${currentStreak === 1 ? '' : 's'}`;
   const streakActive = dailyLog[dateKey()] === true;
 
+  /* ---- small UI helpers ---- */
   function ModeToggle({
     section,
     mode,
@@ -643,16 +770,15 @@ export default function DashboardPage() {
     section: 'health' | 'eco';
     mode: ViewMode;
   }) {
-    const isHealth = section === 'health';
+    const a = accent(section);
     const setMode = (m: ViewMode) => setModeAndAlign(section, m);
     return (
       <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1">
-        {/* Browse first, selected by default */}
         <Button
           size="sm"
           variant={mode === 'browse' ? 'default' : 'ghost'}
           onClick={() => setMode('browse')}
-          className={`${mode === 'browse' ? (isHealth ? 'bg-pink-600 hover:bg-pink-600' : 'bg-green-600 hover:bg-green-600') : ''}`}
+          className={`${mode === 'browse' ? a.buttonActive : ''}`}
           aria-pressed={mode === 'browse'}
         >
           Browse
@@ -661,7 +787,7 @@ export default function DashboardPage() {
           size="sm"
           variant={mode === 'focus' ? 'default' : 'ghost'}
           onClick={() => setMode('focus')}
-          className={`${mode === 'focus' ? (isHealth ? 'bg-pink-600 hover:bg-pink-600' : 'bg-green-600 hover:bg-green-600') : ''}`}
+          className={`${mode === 'focus' ? a.buttonActive : ''}`}
           aria-pressed={mode === 'focus'}
         >
           Focus
@@ -680,20 +806,21 @@ export default function DashboardPage() {
     tasks: Task[];
   }) {
     if (!recents.length) return null;
+    const a = accent(section);
     return (
       <div className="mt-2 flex items-center gap-2 text-xs">
         <span className="inline-flex items-center gap-1 text-slate-500">
           <History className="h-3.5 w-3.5" /> Recently completed:
         </span>
         <div className="flex flex-wrap gap-2">
-          {recents.map(id => {
-            const t = tasks.find(x => x.id === id);
+          {recents.map((id) => {
+            const t = tasks.find((x) => x.id === id);
             if (!t) return null;
             return (
               <button
                 key={`${section}-recent-${id}`}
                 onClick={() => goToById(section, id)}
-                className="px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700"
+                className={`px-2.5 py-1 rounded-full ${a.chipBg} hover:bg-slate-100 ${a.chipText}`}
                 title={t.label}
               >
                 {t.label.length > 22 ? `${t.label.slice(0, 22)}…` : t.label}
@@ -705,98 +832,193 @@ export default function DashboardPage() {
     );
   }
 
-  function DetailsPanel({ details }: { details?: TaskDetails }) {
-    if (!details) return null;
+  function PointsPill({ points }: { points?: number }) {
+    if (typeof points !== 'number') return null;
     return (
-      <div className="mt-4 rounded-xl border border-slate-200 bg-white/90 p-4">
-        <div className="flex items-center gap-2 text-slate-900 font-semibold">
-          <Info className="h-4 w-4" />
-          Why this task matters
-        </div>
-        <div className="mt-3 space-y-2 text-sm">
-          <div>
-            <p className="text-slate-500 text-xs uppercase tracking-wide">What it is</p>
-            <p className="text-slate-800">{details.about}</p>
-          </div>
-          <div>
-            <p className="text-slate-500 text-xs uppercase tracking-wide">Health benefits</p>
-            <p className="text-slate-800">{details.health}</p>
-          </div>
-          <div>
-            <p className="text-slate-500 text-xs uppercase tracking-wide">Environmental impact</p>
-            <p className="text-slate-800">{details.environment}</p>
-          </div>
-          {details.tips?.length ? (
-            <div>
-              <p className="text-slate-500 text-xs uppercase tracking-wide">Tips</p>
-              <ul className="list-disc pl-5 text-slate-800">
-                {details.tips.map((t, i) => (
-                  <li key={`tip-${i}`}>{t}</li>
-                ))}
-              </ul>
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+        <Sparkles className="h-3.5 w-3.5" />
+        +{points} pts
+      </span>
+    );
+  }
+
+  function DetailsPanel({
+    details,
+    section,
+  }: {
+    details?: TaskDetails;
+    section: 'health' | 'eco';
+  }) {
+    if (!details) return null;
+    const a = accent(section);
+    return (
+      <div className={`relative mt-4 rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden`}>
+        {/* Accent header bar */}
+        <div className={`h-1 w-full bg-gradient-to-r ${a.headerBar}`} />
+        {/* Header */}
+        <div className="flex items-start justify-between px-4 sm:px-5 pt-4">
+          <div className="flex items-center gap-2">
+            <div className={`inline-flex items-center gap-1 rounded-full ${a.badgeBg} ${a.badgeText} px-2 py-0.5 text-[11px]`}>
+              <Lightbulb className="h-3.5 w-3.5" />
+              In Focus
             </div>
-          ) : null}
+            <div className="flex items-center gap-1 text-slate-900 font-semibold">
+              <Info className="h-4 w-4" />
+              Why this task matters
+            </div>
+          </div>
+        </div>
+
+        {/* Content grid */}
+        <div className="px-4 sm:px-5 pb-4 pt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">What it is</p>
+              <p className="text-sm text-slate-800">{details.about}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Health benefits</p>
+              <p className="text-sm text-slate-800">{details.health}</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Environmental impact</p>
+              <p className="text-sm text-slate-800">{details.environment}</p>
+            </div>
+
+            {details.tips?.length ? (
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Pro tips</p>
+                <ul className="mt-1 space-y-1.5">
+                  {details.tips.map((t, i) => (
+                    <li key={`tip-${i}`} className="flex items-start gap-2 text-sm text-slate-800">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{t}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     );
   }
 
+  /* ---- current task panel (with accent ring in focus) ---- */
+  function CurrentTaskCard({
+    section,
+    task,
+    index,
+    total,
+    onToggle,
+    focusActive,
+  }: {
+    section: 'health' | 'eco';
+    task?: Task;
+    index: number;
+    total: number;
+    onToggle: () => void;
+    focusActive: boolean;
+  }) {
+    const a = accent(section);
+    return (
+      <div
+        className={`relative flex items-center justify-between p-4 rounded-2xl border bg-white
+        ${focusActive ? `${a.ring} border-transparent shadow-md` : 'border-slate-100'}`}
+      >
+        {/* subtle corner accent */}
+        {focusActive && (
+          <div className="pointer-events-none absolute -top-6 -right-6 h-16 w-16 rounded-full bg-gradient-to-br from-white/0 to-black/5 blur-2xl" />
+        )}
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-semibold text-slate-900">
+              {task?.label ?? '—'}
+            </p>
+            <PointsPill points={task?.points} />
+          </div>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Task {index + 1} of {total}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant={task?.completed ? 'default' : 'outline'}
+          onClick={onToggle}
+          aria-label={task?.completed ? 'Undo task' : 'Complete task'}
+        >
+          {task?.completed ? 'Undo' : 'Complete'}
+        </Button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen bg-gradient-to-b from-slate-50 to-white">
+    <div className="relative flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
-        <TopBar
-          title="Dashboard"
-          subtitle="Track your progress and stay motivated"
-        />
+        <TopBar title="Dashboard" subtitle="Track your progress and stay motivated" />
 
-        <main className="max-w-6xl mx-auto py-8 px-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+        <main className="mx-auto max-w-6xl py-8 px-4">
+          {/* Top stats row (aligned) */}
+          <div className="mb-12 grid grid-cols-1 gap-6 md:grid-cols-12 items-stretch">
             {/* Today's Points */}
-            <div className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6">
+            <div className="md:col-span-3 rounded-2xl border border-slate-100 bg-white/90 p-6 shadow-sm h-full flex flex-col">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-slate-600 mb-1">Today's Points</p>
+                  <p className="mb-1 text-sm text-slate-600">Today's Points</p>
                   <p className="text-3xl font-bold text-slate-900">{todaysPoints}</p>
                 </div>
-                <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                  <Award className="w-6 h-6 text-green-600" />
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100">
+                  <Award className="h-6 w-6 text-green-600" />
                 </div>
               </div>
             </div>
 
-            {/* Current Streak */}
-            <div className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6">
+            {/* Current Streak (summary card) */}
+            <div className="md:col-span-6 rounded-2xl border border-slate-100 bg-white/90 p-6 shadow-sm h-full flex flex-col">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-slate-600 mb-1">Current Streak</p>
-                  <p className="text-3xl font-bold text-slate-900">{streakLabel}</p>
-                  <p className="text-xs mt-1 text-slate-500">
-                    {streakActive ? 'Today counts toward your streak.' : 'Complete at least one task today to keep it going.'}
-                  </p>
+                  <p className="mb-1 text-sm text-slate-600">Current Streak</p>
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-3xl font-bold text-slate-900">{currentStreak}</p>
+                    <span className="text-sm text-slate-500">day{currentStreak === 1 ? '' : 's'}</span>
+                  </div>
                 </div>
-                <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${streakActive ? 'bg-orange-100' : 'bg-slate-100'}`}>
-                  <Flame className={`w-6 h-6 ${streakActive ? 'text-orange-600' : 'text-slate-400'}`} />
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-amber-100">
+                  <Flame className="h-6 w-6 text-orange-600" />
                 </div>
               </div>
+              {streakActive ? (
+                <p className="mt-3 text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1 inline-flex items-center gap-1">
+                  <Flame className="h-4 w-4" /> Active today — keep it going!
+                </p>
+              ) : (
+                <p className="mt-3 text-xs text-slate-500">
+                  Complete at least one task today to keep your streak alive.
+                </p>
+              )}
             </div>
 
             {/* Total Tasks */}
-            <div className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6">
+            <div className="md:col-span-3 rounded-2xl border border-slate-100 bg-white/90 p-6 shadow-sm h-full flex flex-col">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-slate-600 mb-1">Total Tasks</p>
+                  <p className="mb-1 text-sm text-slate-600">Total Tasks</p>
                   <p className="text-3xl font-bold text-slate-900">{totalTasksDisplay}</p>
                 </div>
-                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <TrendingUp className="w-6 h-6 text-blue-600" />
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-100">
+                  <TrendingUp className="h-6 w-6 text-blue-600" />
                 </div>
               </div>
             </div>
           </div>
 
           {/* Task Cards */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
             {/* Health */}
             <DashboardCard
               title="Health Tasks"
@@ -807,7 +1029,9 @@ export default function DashboardPage() {
             >
               {/* Mode + Progress + Reset */}
               <div className="mt-2 flex items-center justify-between">
-                <div className="text-xs text-slate-500">{healthCompleted}/{healthTasks.length} completed</div>
+                <div className="text-xs text-slate-500">
+                  {healthCompleted}/{healthTasks.length} completed
+                </div>
                 <div className="flex items-center gap-2">
                   <ModeToggle section="health" mode={healthMode} />
                   <Button
@@ -824,9 +1048,9 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <div className="mt-2 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
                 <div
-                  className="h-full bg-pink-500 transition-all"
+                  className={`h-full ${accent('health').progress} transition-all`}
                   style={{ width: `${healthTasks.length ? (healthCompleted / healthTasks.length) * 100 : 0}%` }}
                 />
               </div>
@@ -834,23 +1058,16 @@ export default function DashboardPage() {
 
               {healthTasks.length ? (
                 <>
+                  {/* Current task */}
                   <div className="mt-4">
-                    <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-800 truncate">{healthTasks[healthIndex]?.label}</p>
-                        <p className="text-xs text-slate-500 mt-1">+{healthTasks[healthIndex]?.points} pts</p>
-                        <p className="text-[11px] text-slate-400 mt-1">
-                          Task {healthIndex + 1} of {healthTasks.length}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant={healthTasks[healthIndex]?.completed ? 'default' : 'outline'}
-                        onClick={() => handleToggleAndAutoAdvance('health')}
-                      >
-                        {healthTasks[healthIndex]?.completed ? 'Undo' : 'Complete'}
-                      </Button>
-                    </div>
+                    <CurrentTaskCard
+                      section="health"
+                      task={healthTasks[healthIndex]}
+                      index={healthIndex}
+                      total={healthTasks.length}
+                      onToggle={() => handleToggleAndAutoAdvance('health')}
+                      focusActive={healthMode === 'focus'}
+                    />
 
                     {/* Carousel Controls */}
                     <div className="mt-3 flex items-center justify-between">
@@ -865,9 +1082,9 @@ export default function DashboardPage() {
                             onClick={() => goTo('health', i)}
                             className={`h-2.5 w-2.5 rounded-full transition
                               ${i === healthIndex
-                                ? 'bg-pink-600'
+                                ? accent('health').dotActive
                                 : t.completed
-                                ? 'bg-pink-300 hover:bg-pink-400'
+                                ? accent('health').dotDone
                                 : 'bg-slate-300 hover:bg-slate-400'}`}
                           />
                         ))}
@@ -879,7 +1096,7 @@ export default function DashboardPage() {
 
                     {/* Focus mode details */}
                     {healthMode === 'focus' && (
-                      <DetailsPanel details={healthTasks[healthIndex]?.details} />
+                      <DetailsPanel details={healthTasks[healthIndex]?.details} section="health" />
                     )}
 
                     {/* All done helper */}
@@ -890,12 +1107,12 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  <Button className="w-full mt-4" variant="ghost" asChild>
+                  <Button className="mt-4 w-full" variant="ghost" asChild>
                     <Link href="/tasks?section=health">View All Health Tasks</Link>
                   </Button>
                 </>
               ) : (
-                <p className="text-sm text-slate-500 mt-4">No health tasks.</p>
+                <p className="mt-4 text-sm text-slate-500">No health tasks.</p>
               )}
             </DashboardCard>
 
@@ -909,7 +1126,9 @@ export default function DashboardPage() {
             >
               {/* Mode + Progress + Reset */}
               <div className="mt-2 flex items-center justify-between">
-                <div className="text-xs text-slate-500">{ecoCompleted}/{ecoTasks.length} completed</div>
+                <div className="text-xs text-slate-500">
+                  {ecoCompleted}/{ecoTasks.length} completed
+                </div>
                 <div className="flex items-center gap-2">
                   <ModeToggle section="eco" mode={ecoMode} />
                   <Button
@@ -926,9 +1145,9 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <div className="mt-2 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
                 <div
-                  className="h-full bg-green-600 transition-all"
+                  className={`h-full ${accent('eco').progress} transition-all`}
                   style={{ width: `${ecoTasks.length ? (ecoCompleted / ecoTasks.length) * 100 : 0}%` }}
                 />
               </div>
@@ -936,30 +1155,23 @@ export default function DashboardPage() {
 
               {ecoTasks.length ? (
                 <>
+                  {/* Current task */}
                   <div className="mt-4">
-                    <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-800 truncate">{ecoTasks[ecoIndex]?.label}</p>
-                        <p className="text-xs text-slate-500 mt-1">+{ecoTasks[ecoIndex]?.points} pts</p>
-                        <p className="text-[11px] text-slate-400 mt-1">
-                          Task {ecoIndex + 1} of {ecoTasks.length}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant={ecoTasks[ecoIndex]?.completed ? 'default' : 'outline'}
-                        onClick={() => handleToggleAndAutoAdvance('eco')}
-                      >
-                        {ecoTasks[ecoIndex]?.completed ? 'Undo' : 'Complete'}
-                      </Button>
-                    </div>
+                    <CurrentTaskCard
+                      section="eco"
+                      task={ecoTasks[ecoIndex]}
+                      index={ecoIndex}
+                      total={ecoTasks.length}
+                      onToggle={() => handleToggleAndAutoAdvance('eco')}
+                      focusActive={ecoMode === 'focus'}
+                    />
 
                     {/* Carousel Controls */}
                     <div className="mt-3 flex items-center justify-between">
                       <Button size="icon" variant="outline" onClick={() => prev('eco')} aria-label="Previous eco task">
                         <ChevronLeft className="h-4 w-4" />
                       </Button>
-                      <div className="flex items中心 gap-1">
+                      <div className="flex items-center gap-1">
                         {ecoTasks.map((t, i) => (
                           <button
                             key={`e-dot-${t.id}`}
@@ -967,9 +1179,9 @@ export default function DashboardPage() {
                             onClick={() => goTo('eco', i)}
                             className={`h-2.5 w-2.5 rounded-full transition
                               ${i === ecoIndex
-                                ? 'bg-green-600'
+                                ? accent('eco').dotActive
                                 : t.completed
-                                ? 'bg-green-300 hover:bg-green-400'
+                                ? accent('eco').dotDone
                                 : 'bg-slate-300 hover:bg-slate-400'}`}
                           />
                         ))}
@@ -981,7 +1193,7 @@ export default function DashboardPage() {
 
                     {/* Focus mode details */}
                     {ecoMode === 'focus' && (
-                      <DetailsPanel details={ecoTasks[ecoIndex]?.details} />
+                      <DetailsPanel details={ecoTasks[ecoIndex]?.details} section="eco" />
                     )}
 
                     {ecoAllDone && (
@@ -991,12 +1203,12 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  <Button className="w-full mt-4" variant="ghost" asChild>
+                  <Button className="mt-4 w-full" variant="ghost" asChild>
                     <Link href="/tasks?section=eco">View All Eco Tasks</Link>
                   </Button>
                 </>
               ) : (
-                <p className="text-sm text-slate-500 mt-4">No eco tasks.</p>
+                <p className="mt-4 text-sm text-slate-500">No eco tasks.</p>
               )}
             </DashboardCard>
           </div>

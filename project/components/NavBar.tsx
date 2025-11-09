@@ -8,8 +8,8 @@ import { cn } from '@/lib/utils';
 const mainLinks = [
   { href: '/', label: 'Home' },
   { href: '/dashboard', label: 'Dashboard' },
-  { href: '/tasks', label: 'Tasks' },
-  { href: '/coach', label: 'Coach' },
+  { href: '/calendar', label: 'Calendar' },
+  { href: '/coach', label: 'AI Coach' },
   { href: '/integrations', label: 'Integrations' },
   { href: '/about', label: 'About Us' },
   { href: '/settings', label: 'Settings' },
@@ -37,6 +37,7 @@ export default function NavBar() {
         <nav className="hidden md:flex items-center space-x-1">
           {mainLinks.map(({ href, label }) => {
             const active = isActive(pathname ?? '/', href);
+            
             return (
               <Link
                 key={href}

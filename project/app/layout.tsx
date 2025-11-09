@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google';
 import NavBar from '@/components/NavBar';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { Toaster } from '@/components/ui/toaster';
+import Background from '@/components/Background';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -21,9 +22,12 @@ return (
 <html lang="en">
 <body className={inter.className}>
 <ThemeProvider>
+<div className="relative min-h-screen">
+<Background />
 <NavBar />
 {children}
 <Toaster />
+</div>
 </ThemeProvider>
 </body>
 </html>

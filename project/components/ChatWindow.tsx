@@ -18,7 +18,7 @@ export default function ChatWindow() {
     {
       id: '1',
       role: 'assistant',
-      content: "Hi! I'm your EcoLife Coach. I'm here to help you build sustainable habits and improve your wellness. How can I assist you today?",
+      content: "Hi! I'm your EarthWise Coach. I'm here to help you build sustainable habits and improve your wellness. How can I assist you today?",
       timestamp: new Date(),
     },
   ]);

@@ -3,10 +3,11 @@
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import ChatWindow from '@/components/ChatWindow';
+import PageShell from '@/components/PageShell';
 
 export default function CoachPage() {
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1 flex flex-col">
         <TopBar
@@ -14,11 +15,11 @@ export default function CoachPage() {
           subtitle="Get personalized guidance for your wellness journey"
         />
 
-        <main className="flex-1 p-8">
+        <PageShell className="flex-1 p-8">
           <div className="h-[calc(100vh-180px)]">
             <ChatWindow />
           </div>
-        </main>
+        </PageShell>
       </div>
     </div>
   );

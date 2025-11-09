@@ -1,18 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Trophy, Medal } from 'lucide-react';
 import Image from 'next/image';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
+import PageShell from '@/components/PageShell';
 
-/* -------------------------------------------
-   Tiny helpers for geolocation → "City, ST"
---------------------------------------------*/
+// --- NEW: tiny helpers for geolocation → "City, ST"
 type Place = { city: string; state: string };
 const DEFAULT_PLACE: Place = { city: 'Princeton', state: 'NJ' };
-const INITIAL_SUBTITLE = 'Top players making a positive impact…';
+const INITIAL_SUBTITLE = 'Top players making a positive impact…'; // first typed text
 
 function toUSPS(name?: string): string | null {
   if (!name) return null;
@@ -62,83 +61,47 @@ async function ipFallback(): Promise<Place | null> {
   }
 }
 
-/* -------------------------------------------
-   Typewriter utilities (no style changes)
---------------------------------------------*/
-function useTypewriter(text: string, opts?: { speed?: number; startDelay?: number }) {
-  const { speed = 16, startDelay = 0 } = opts || {};
+// --- NEW: simple typewriter hook
+function useTypewriter(text: string, speed = 18) {
   const [display, setDisplay] = useState('');
   useEffect(() => {
     let i = 0;
-    let running = true;
     setDisplay('');
-    const start = setTimeout(() => {
-      const id = setInterval(() => {
-        if (!running) return clearInterval(id);
-        i++;
-        setDisplay(text.slice(0, i));
-        if (i >= text.length) clearInterval(id);
-      }, speed);
-    }, startDelay);
-    return () => {
-      running = false;
-      clearTimeout(start);
-    };
-  }, [text, speed, startDelay]);
+    const id = setInterval(() => {
+      i++;
+      setDisplay(text.slice(0, i));
+      if (i >= text.length) clearInterval(id);
+    }, speed);
+    return () => clearInterval(id);
+  }, [text, speed]);
   return display;
 }
 
-function TypedText({
-  text,
-  speed = 16,
-  startDelay = 0,
-  showCursor = false,
-  cursorClassName = 'inline-block w-[1px] h-[1em] bg-slate-400 ml-0.5 animate-pulse align-[-0.08em]',
-  className = '',
-}: {
-  text: string;
-  speed?: number;
-  startDelay?: number;
-  showCursor?: boolean;
-  cursorClassName?: string;
-  className?: string;
-}) {
-  const typed = useTypewriter(text, { speed, startDelay });
-  const done = typed.length === text.length;
-  return (
-    <span className={className}>
-      {typed}
-      {showCursor && !done && <span aria-hidden className={cursorClassName} />}
-    </span>
-  );
-}
-
-/* -------------------------------------------
-   Mock data (unchanged)
---------------------------------------------*/
+// Mock leaderboard data (unchanged)
 const leaderboardData = [
-  { id: 1, name: "Alex Chen",    score: 2150, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" },
+  { id: 1, name: "Alex Chen", score: 2150, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" },
   { id: 2, name: "Sarah Miller", score: 1950, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah" },
   { id: 3, name: "James Wilson", score: 1840, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=James" },
-  { id: 4, name: "Emma Davis",   score: 1720, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma" },
-  { id: 5, name: "Michael Brown",score: 1680, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael" },
-  { id: 6, name: "Lisa Taylor",  score: 1590, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Lisa" },
-  { id: 7, name: "David Park",   score: 1520, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=David" },
+  { id: 4, name: "Emma Davis", score: 1720, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma" },
+  { id: 5, name: "Michael Brown", score: 1680, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael" },
+  { id: 6, name: "Lisa Taylor", score: 1590, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Lisa" },
+  { id: 7, name: "David Park", score: 1520, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=David" },
   { id: 8, name: "Rachel Green", score: 1480, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Rachel" },
-  { id: 9, name: "Thomas Lee",   score: 1440, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Thomas" },
-  { id:10, name: "Jessica Kim",  score: 1390, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Jessica" }
+  { id: 9, name: "Thomas Lee", score: 1440, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Thomas" },
+  { id: 10, name: "Jessica Kim", score: 1390, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Jessica" }
 ];
 
 export default function LeaderboardPage() {
-  /* ---- TopBar: type both title + geo subtitle ---- */
+  // Full subtitle text we want to type
   const [fullSubtitle, setFullSubtitle] = useState(INITIAL_SUBTITLE);
-  const typedTitle = useTypewriter('Leaderboard', { speed: 18, startDelay: 150 }); // slight delay for nicer entrance
-  const typedSubtitle = useTypewriter(fullSubtitle, { speed: 14, startDelay: 300 });
+  // Typed version shown in UI
+  const typedSubtitle = useTypewriter(fullSubtitle, 16);
 
   useEffect(() => {
     let cancelled = false;
+
     async function detect() {
-      // geolocation (short timeout)
+      // 1) Try geolocation (short timeout)
       const pos = await new Promise<GeolocationPosition | null>((resolve) => {
         if (!navigator.geolocation) return resolve(null);
         const timer = setTimeout(() => resolve(null), 6000);
@@ -150,147 +113,115 @@ export default function LeaderboardPage() {
       });
 
       let place: Place | null = null;
-      if (pos) place = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-      if (!place) place = await ipFallback();
+      if (pos) {
+        place = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+      }
+      if (!place) {
+        place = await ipFallback();
+      }
 
       const finalPlace = place ?? DEFAULT_PLACE;
       const next = `Top players making a positive impact near you | ${finalPlace.city}, ${finalPlace.state}`;
-      if (!cancelled) setFullSubtitle(next);
+      if (!cancelled) setFullSubtitle(next); // re-triggers typing with new text
     }
+
+    // Start by typing the short intro, then resolve geo + retype final
     detect();
     return () => { cancelled = true; };
   }, []);
 
-  /* ---- Stagger timings for everything else ---- */
-  const podiumStart = 700; // after title/subtitle begin
-  const rowBaseStart = 900;
-
-  // Precompute typed header strings so hooks order is stable
-  const hdrRank   = useTypewriter('RANK',   { speed: 12, startDelay: 650 });
-  const hdrPlayer = useTypewriter('PLAYER', { speed: 12, startDelay: 700 });
-  const hdrScore  = useTypewriter('SCORE',  { speed: 12, startDelay: 750 });
-
   return (
-    <div className="flex min-h-screen bg-gradient-to-b from-slate-50 to-white">
+    <div className="flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
-        {/* We pass typed strings—TopBar design stays intact */}
-        <TopBar
-          title={typedTitle}
-          subtitle={typedSubtitle}
-        />
-
-        <main className="max-w-6xl mx-auto py-8 px-4">
-          {/* Podium Cards (type names + scores with gentle stagger) */}
+        {/* Pass the typed string into your existing TopBar (design untouched) */}
+        <TopBar title="Leaderboard" subtitle={typedSubtitle} />
+        <PageShell className="max-w-6xl mx-auto py-8 px-4">
+          {/* Podium Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-            {leaderboardData.slice(0, 3).map((user, i) => {
-              const delay = podiumStart + i * 120;
-              return (
-                <motion.div
-                  key={user.id}
-                  initial={{ scale: 0.8, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={{ delay: i * 0.1 }}
-                  className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6"
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="relative w-16 h-16">
-                      <Image
-                        src={user.avatar}
-                        alt={user.name}
-                        fill
-                        className="rounded-full object-cover border-4 border-slate-100"
-                      />
-                    </div>
-                    <div className="w-12 h-12 rounded-lg flex items-center justify-center">
-                      {i === 0 ? (
-                        <Trophy className="w-8 h-8 text-yellow-500" />
-                      ) : i === 1 ? (
-                        <Medal className="w-8 h-8 text-slate-400" />
-                      ) : (
-                        <Medal className="w-8 h-8 text-orange-400" />
-                      )}
-                    </div>
+            {leaderboardData.slice(0, 3).map((user, i) => (
+              <motion.div
+                key={user.id}
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: i * 0.1 }}
+                className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <div className="relative w-16 h-16">
+                    <Image
+                      src={user.avatar}
+                      alt={user.name}
+                      fill
+                      className="rounded-full object-cover border-4 border-slate-100"
+                    />
                   </div>
-
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    <TypedText text={user.name} speed={14} startDelay={delay} showCursor={false} />
-                  </h3>
-                  <p className="text-3xl font-bold text-slate-900 mt-2">
-                    <TypedText text={String(user.score)} speed={14} startDelay={delay + 120} showCursor={false} />
-                  </p>
-                  <p className="text-sm text-slate-500 mt-1">
-                    <TypedText text="points" speed={14} startDelay={delay + 180} showCursor={false} />
-                  </p>
-                </motion.div>
-              );
-            })}
+                  <div className="w-12 h-12 rounded-lg flex items-center justify-center">
+                    {i === 0 ? (
+                      <Trophy className="w-8 h-8 text-yellow-500" />
+                    ) : i === 1 ? (
+                      <Medal className="w-8 h-8 text-slate-400" />
+                    ) : (
+                      <Medal className="w-8 h-8 text-orange-400" />
+                    )}
+                  </div>
+                </div>
+                <h3 className="text-lg font-semibold text-slate-900">{user.name}</h3>
+                <p className="text-3xl font-bold text-slate-900 mt-2">{user.score}</p>
+                <p className="text-sm text-slate-500 mt-1">points</p>
+              </motion.div>
+            ))}
           </div>
 
-          {/* Leaderboard Table (type headers + each row name/score, staggered) */}
+          {/* Leaderboard Table */}
           <div className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-slate-100">
-                  <th className="text-left py-4 px-6 text-sm font-medium text-slate-500">
-                    {hdrRank}
-                  </th>
-                  <th className="text-left py-4 px-6 text-sm font-medium text-slate-500">
-                    {hdrPlayer}
-                  </th>
-                  <th className="text-right py-4 px-6 text-sm font-medium text-slate-500">
-                    {hdrScore}
-                  </th>
+                  <th className="text-left py-4 px-6 text-sm font-medium text-slate-500">RANK</th>
+                  <th className="text-left py-4 px-6 text-sm font-medium text-slate-500">PLAYER</th>
+                  <th className="text-right py-4 px-6 text-sm font-medium text-slate-500">SCORE</th>
                 </tr>
               </thead>
               <tbody>
-                {leaderboardData.map((user, i) => {
-                  const delay = rowBaseStart + i * 80; // gentle stagger down the list
-                  return (
-                    <tr
-                      key={user.id}
-                      className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors"
-                    >
-                      <td className="py-4 px-6">
-                        <span
-                          className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-medium
-                            ${i === 0 ? 'bg-yellow-100 text-yellow-700' :
-                              i === 1 ? 'bg-slate-100 text-slate-700' :
-                              i === 2 ? 'bg-orange-100 text-orange-700' :
-                              'bg-slate-50 text-slate-600'}`}
-                        >
-                          {i + 1}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6">
-                        <div className="flex items-center gap-3">
-                          <Image
-                            src={user.avatar}
-                            alt={user.name}
-                            width={32}
-                            height={32}
-                            className="rounded-full"
-                          />
-                          <span className="font-medium text-slate-900">
-                            <TypedText text={user.name} speed={13} startDelay={delay} showCursor={false} />
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-4 px-6 text-right">
-                        <span className="font-medium text-slate-900">
-                          <TypedText text={String(user.score)} speed={13} startDelay={delay + 100} showCursor={false} />
-                        </span>
-                        <span className="text-sm text-slate-500 ml-1">
-                          <TypedText text="pts" speed={13} startDelay={delay + 150} showCursor={false} />
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {leaderboardData.map((user, i) => (
+                  <tr
+                    key={user.id}
+                    className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors"
+                  >
+                    <td className="py-4 px-6">
+                      <span
+                        className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-medium
+                          ${i === 0 ? 'bg-yellow-100 text-yellow-700' :
+                            i === 1 ? 'bg-slate-100 text-slate-700' :
+                            i === 2 ? 'bg-orange-100 text-orange-700' :
+                            'bg-slate-50 text-slate-600'}`}
+                      >
+                        {i + 1}
+                      </span>
+                    </td>
+                    <td className="py-4 px-6">
+                      <div className="flex items-center gap-3">
+                        <Image
+                          src={user.avatar}
+                          alt={user.name}
+                          width={32}
+                          height={32}
+                          className="rounded-full"
+                        />
+                        <span className="font-medium text-slate-900">{user.name}</span>
+                      </div>
+                    </td>
+                    <td className="py-4 px-6 text-right">
+                      <span className="font-medium text-slate-900">{user.score}</span>
+                      <span className="text-sm text-slate-500 ml-1">pts</span>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </main>
+        </PageShell>
       </div>
     </div>
   );

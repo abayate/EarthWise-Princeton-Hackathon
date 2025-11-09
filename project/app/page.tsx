@@ -126,7 +126,66 @@ const featureItem = {
   },
 };
 
-export default function Dashboard() {
+/* ---------------- Animated underline that "draws" then subtly pulses ---------------- */
+function UnderlineWord({
+  visibleText,
+  target,
+  underlineClass = 'bg-emerald-500',
+}: {
+  visibleText: string;
+  target: string;
+  underlineClass?: string;
+}) {
+  const lower = visibleText.toLowerCase();
+  const idx = lower.indexOf(target.toLowerCase());
+  const hasFullWord = idx !== -1 && visibleText.length >= idx + target.length;
+
+  // Lock underline on once the word has fully appeared.
+  const [armed, setArmed] = React.useState(false);
+  React.useEffect(() => {
+    if (hasFullWord && !armed) setArmed(true);
+  }, [hasFullWord, armed]);
+
+  // Until the word exists (and we haven't armed yet) just show raw text.
+  if (!hasFullWord && !armed) return <>{visibleText}</>;
+
+  // If somehow armed but the word isn't present (edge case), also show raw text.
+  if (idx === -1) return <>{visibleText}</>;
+
+  const before = visibleText.slice(0, idx);
+  const word = visibleText.slice(idx, idx + target.length);
+  const after = visibleText.slice(idx + target.length);
+
+  return (
+    <>
+      {before}
+      {/* IMPORTANT: keep gradient on the word span so text doesn't disappear */}
+      <span className="relative inline-block bg-clip-text text-transparent bg-text-gradient align-baseline">
+        {word}
+        {/* Draw underline once */}
+        <motion.span
+          aria-hidden
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: 1 }}
+          transition={{ duration: 0.6, ease: 'easeInOut' }}
+          className={`absolute left-0 -bottom-1 h-[3px] w-full origin-left rounded-full ${underlineClass}`}
+        />
+        {/* Soft glow pulse under the line (loop) */}
+        <motion.span
+          aria-hidden
+          className={`pointer-events-none absolute left-0 -bottom-1 h-[3px] w-full rounded-full ${underlineClass}`}
+          style={{ filter: 'blur(4px)' }}
+          initial={{ opacity: 0.2 }}
+          animate={{ opacity: [0.15, 0.6, 0.15], scaleY: [1, 1.5, 1] }}
+          transition={{ duration: 1.4, ease: 'easeInOut', repeat: Infinity }}
+        />
+      </span>
+      {after}
+    </>
+  );
+}
+
+export default function Page() {
   const DELAYS = {
     hero: 0.1,
     features: 0.8,
@@ -166,16 +225,6 @@ export default function Dashboard() {
         <div className="blob blob-emerald" />
         <div className="blob blob-sky" />
       </div>
-
-      {/* Profile button (top-right) */}
-      <Link
-        href="/settings/profile"
-        aria-label="Open profile settings"
-        className="group absolute right-0 top-0 -mt-2 -mr-2 md:-mr-0 md:-mt-0 md:right-2 md:top-2 inline-flex items-center justify-center rounded-full border border-slate-200 bg-white/80 p-2 shadow-sm backdrop-blur hover:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
-      >
-        <User className="w-5 h-5 text-slate-600 transition-colors group-hover:text-emerald-600" />
-        <span className="sr-only">Profile settings</span>
-      </Link>
 
       {/* Floating rotating badges */}
       <BadgeRotator
@@ -221,23 +270,31 @@ export default function Dashboard() {
         {/* Hero */}
         <div className="text-center">
           <motion.h1
-            className="mx-auto max-w-3xl bg-clip-text text-transparent text-5xl font-bold leading-tight sm:text-6xl"
-            style={{
-              backgroundImage:
-                'linear-gradient(90deg, #059669, #10b981, #34d399, #22d3ee, #059669)',
-              backgroundSize: '200% 100%',
-              animation: 'gradx 10s ease-in-out infinite',
-            }}
+            className="mx-auto max-w-3xl bg-clip-text text-transparent bg-text-gradient text-5xl font-bold leading-tight sm:text-6xl"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, ease: 'easeOut', delay: DELAYS.hero }}
           >
-            <span>{titleLine1}</span>
+            {/* Line 1: underline “Better” */}
+            <span>
+              <UnderlineWord
+                visibleText={titleLine1}
+                target="Better"
+                underlineClass="bg-emerald-500"
+              />
+            </span>
             <br />
-            <span>{titleLine2}</span>
+            {/* Line 2: underline “Greener” */}
+            <span>
+              <UnderlineWord
+                visibleText={titleLine2}
+                target="Greener"
+                underlineClass="bg-emerald-500"
+              />
+            </span>
           </motion.h1>
 
-          {/* Tagline now FADES IN (no typing) */}
+          {/* Tagline */}
           <motion.p
             className="mx-auto mt-5 max-w-2xl text-balance text-lg text-slate-700"
             initial={{ opacity: 0, y: 16 }}
@@ -260,20 +317,17 @@ export default function Dashboard() {
             {
               icon: <Heart className="w-6 h-6" />,
               title: 'Health Goals',
-              desc:
-                'Track wellness habits and build sustainable routines for better health.',
+              desc: 'Track wellness habits and build sustainable routines for better health.',
             },
             {
               icon: <Leaf className="w-6 h-6" />,
               title: 'Eco Actions',
-              desc:
-                'Make a positive impact with daily eco-friendly challenges and tips.',
+              desc: 'Make a positive impact with daily eco-friendly challenges and tips.',
             },
             {
               icon: <TrendingUp className="w-6 h-6" />,
               title: 'Progress Tracking',
-              desc:
-                'Visualize your journey with streaks, points, and achievements.',
+              desc: 'Visualize your journey with streaks, points, and achievements.',
             },
           ].map((f) => (
             <motion.div
@@ -292,33 +346,14 @@ export default function Dashboard() {
           ))}
         </motion.div>
 
-        {/* Get Started button — simple fade-in */}
+        {/* Get Started button */}
         <motion.div
           className="mt-8 flex justify-center"
           initial={{ opacity: 0, scale: 0.98, y: 6 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={{ delay: DELAYS.button, duration: 0.5, ease: 'easeOut' }}
         >
-          <Button
-            asChild
-            size="lg"
-            className="text-lg px-8 py-6 h-auto"
-            style={{
-              backgroundImage: 'linear-gradient(135deg, #059669, #10b981, #34d399)',
-              backgroundSize: '160% 100%',
-              boxShadow: '0 10px 30px rgba(16,185,129,0.25)',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget.style.backgroundPosition = '100% 0');
-              (e.currentTarget.style.transform = 'translateY(-1px)');
-              (e.currentTarget.style.boxShadow = '0 14px 34px rgba(16,185,129,0.35)');
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget.style.backgroundPosition = '0 0');
-              (e.currentTarget.style.transform = 'translateY(0)');
-              (e.currentTarget.style.boxShadow = '0 10px 30px rgba(16,185,129,0.25)');
-            }}
-          >
+          <Button asChild size="lg" className="btn-primary text-lg px-8 py-6 h-auto">
             <Link href="/login">Get Started</Link>
           </Button>
         </motion.div>
@@ -333,55 +368,6 @@ export default function Dashboard() {
           Built with mindfulness for the planet—and you.
         </motion.p>
       </div>
-
-      {/* Background & text gradient keyframes (scoped) */}
-      <style jsx global>{`
-        @media (prefers-reduced-motion: reduce) {
-          .blob, .gradient-wash { animation: none !important; }
-        }
-        .grid-bg {
-          background-image:
-            radial-gradient(circle at 1px 1px, rgba(2, 6, 23, 0.08) 1px, transparent 0),
-            radial-gradient(circle at 1px 1px, rgba(2, 6, 23, 0.05) 1px, transparent 0);
-          background-size: 26px 26px, 52px 52px;
-          background-position: 0 0, 13px 13px;
-        }
-        .gradient-wash {
-          pointer-events: none;
-          background:
-            radial-gradient(60% 60% at 50% 18%, rgba(16,185,129,0.14) 0%, transparent 60%),
-            radial-gradient(42% 42% at 82% 70%, rgba(59,130,246,0.10) 0%, transparent 60%);
-          animation: wash 12s linear infinite alternate;
-        }
-        @keyframes wash {
-          0%   { transform: translateY(0px);   opacity: 1; }
-          100% { transform: translateY(10px); opacity: 1; }
-        }
-        .blob {
-          position: absolute;
-          width: 28rem;
-          height: 28rem;
-          border-radius: 9999px;
-          filter: blur(52px);
-          opacity: 0.35;
-          animation: blob-float 20s ease-in-out infinite;
-          transform: translateZ(0);
-        }
-        .blob-green  { background: radial-gradient(circle at 30% 30%, #22c55e, transparent 60%); top: -8rem; left: -6rem; }
-        .blob-emerald{ background: radial-gradient(circle at 70% 40%, #10b981, transparent 60%); top: 35vh; right: -10rem; animation-delay: 2.2s; }
-        .blob-sky    { background: radial-gradient(circle at 50% 50%, #38bdf8, transparent 60%); bottom: -10rem; left: 15%; animation-delay: 4.1s; }
-        @keyframes blob-float {
-          0%   { transform: translate(0, 0) scale(1); }
-          33%  { transform: translate(18px, -14px) scale(1.03); }
-          66%  { transform: translate(-14px, 10px) scale(0.985); }
-          100% { transform: translate(0, 0) scale(1); }
-        }
-        @keyframes gradx {
-          0% { background-position: 0% 50% }
-          50% { background-position: 100% 50% }
-          100% { background-position: 0% 50% }
-        }
-      `}</style>
     </div>
   );
 }

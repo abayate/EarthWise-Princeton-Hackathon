@@ -1,12 +1,15 @@
+
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
+import PageShell from '@/components/PageShell';
 import DashboardCard from '@/components/DashboardCard';
-import { Heart, Leaf, CalendarDays } from 'lucide-react';
+import { Heart, Leaf, CalendarDays, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { STORAGE_KEYS, celebrateIfEnabled, playClickIfEnabled } from '@/lib/earthwise';
 
 type Task = {
   id: string;
@@ -17,16 +20,8 @@ type Task = {
 
 type DailyLog = Record<string, boolean>; // YYYY-MM-DD -> completed?
 
-// ---------- Config (must match dashboard) ----------
 const DAILY_COMPLETION_THRESHOLD = 1;
-const STORAGE_KEYS = {
-  HEALTH: 'ew_healthTasks_v1',
-  ECO: 'ew_ecoTasks_v1',
-  LOG: 'ew_dailyLog_v1',
-  LAST_OPEN: 'ew_lastOpenDate_v1',
-} as const;
 
-// ---------- Date helpers ----------
 function dateKey(d: Date = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -53,19 +48,28 @@ function formatNice(d: Date) {
   });
 }
 
+function saveAndNotify(key: string, valueObj: unknown) {
+  const value = JSON.stringify(valueObj);
+  localStorage.setItem(key, value);
+  window.dispatchEvent(
+    new CustomEvent('taskStateUpdate', {
+      detail: { key, value },
+    })
+  );
+}
+
 export default function TasksPage() {
-  // ---------- Shared defaults (must match dashboard) ----------
   const defaultHealth: Task[] = [
     { id: 'yoga-20',            label: '20-minute yoga',                      points: 20, completed: false },
     { id: 'strength-15',        label: '15-minute strength training',         points: 25, completed: false },
     { id: 'intervals-10',       label: '10-minute intervals',                 points: 20, completed: false },
     { id: 'healthy-breakfast',  label: 'Healthy breakfast (protein + fruit)', points: 15, completed: false },
-    { id: 'steps-8000',         label: '8,000 steps',                          points: 25, completed: false },
-    { id: 'sleep-8h',           label: 'Sleep 8 hours',                        points: 30, completed: false },
-    { id: 'screen-breaks',      label: 'Screen breaks every hour',             points: 10, completed: false },
-    { id: 'journaling-5',       label: '5-minute journaling',                  points: 10, completed: false },
-    { id: 'breathing-3',        label: '3-minute breathing exercise',          points: 10, completed: false },
-    { id: 'posture-x3',         label: 'Posture check ×3',                     points: 5,  completed: false },
+    { id: 'steps-8000',         label: '8,000 steps',                         points: 25, completed: false },
+    { id: 'sleep-8h',           label: 'Sleep 8 hours',                       points: 30, completed: false },
+    { id: 'screen-breaks',      label: 'Screen breaks every hour',            points: 10, completed: false },
+    { id: 'journaling-5',       label: '5-minute journaling',                 points: 10, completed: false },
+    { id: 'breathing-3',        label: '3-minute breathing exercise',         points: 10, completed: false },
+    { id: 'posture-x3',         label: 'Posture check ×3',                    points: 5,  completed: false },
   ];
 
   const defaultEco: Task[] = [
@@ -81,7 +85,6 @@ export default function TasksPage() {
     { id: 'no-single-use-plastic',  label: 'No single-use plastic today',           points: 25, completed: false },
   ];
 
-  // ---------- State ----------
   const [healthTasks, setHealthTasks] = useState<Task[]>(defaultHealth);
   const [ecoTasks, setEcoTasks] = useState<Task[]>(defaultEco);
   const [dailyLog, setDailyLog] = useState<DailyLog>({});
@@ -89,12 +92,10 @@ export default function TasksPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // View selector: today (default) or tomorrow (preview)
   const viewingTomorrow = (searchParams.get('when') || '').toLowerCase() === 'tomorrow';
   const today = new Date();
   const tomorrow = addDays(today, 1);
 
-  // ---------- Load state + daily reset (match dashboard) ----------
   useEffect(() => {
     try {
       const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
@@ -128,47 +129,56 @@ export default function TasksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------- Derived (today only) ----------
   const completedCountToday = useMemo(
     () => [...healthTasks, ...ecoTasks].filter(t => t.completed).length,
     [healthTasks, ecoTasks]
   );
   const todaysCompleted = completedCountToday >= DAILY_COMPLETION_THRESHOLD;
 
-  // ---------- Persist task state and sync with dashboard ----------
-  // Sync tasks state from localStorage when it changes in other pages
+  const healthCompleted = useMemo(
+    () => healthTasks.filter(t => t.completed).length,
+    [healthTasks]
+  );
+  const ecoCompleted = useMemo(
+    () => ecoTasks.filter(t => t.completed).length,
+    [ecoTasks]
+  );
+
+  // cross-tab + same-window sync
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
-      if (viewingTomorrow) return; // don't sync if viewing tomorrow's preview
-      if (e.key === STORAGE_KEYS.HEALTH) {
-        const newTasks = e.newValue ? JSON.parse(e.newValue) : defaultHealth;
-        setHealthTasks(newTasks);
-      } else if (e.key === STORAGE_KEYS.ECO) {
-        const newTasks = e.newValue ? JSON.parse(e.newValue) : defaultEco;
-        setEcoTasks(newTasks);
+      if (viewingTomorrow) return;
+      if (e.key === STORAGE_KEYS.HEALTH && e.newValue) {
+        setHealthTasks(JSON.parse(e.newValue));
+      } else if (e.key === STORAGE_KEYS.ECO && e.newValue) {
+        setEcoTasks(JSON.parse(e.newValue));
       }
     };
-
-    // Handle custom events for same-window updates
-    // (no same-window custom event handler; rely on storage events)
-
     window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+
+    const handleCustom = (e: Event) => {
+      if (viewingTomorrow) return;
+      const ce = e as CustomEvent<{ key?: string; value?: string }>;
+      const { key, value } = ce.detail || {};
+      if (!key || !value) return;
+      if (key === STORAGE_KEYS.HEALTH) setHealthTasks(JSON.parse(value));
+      if (key === STORAGE_KEYS.ECO) setEcoTasks(JSON.parse(value));
+    };
+    window.addEventListener('taskStateUpdate', handleCustom as EventListener);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('taskStateUpdate', handleCustom as EventListener);
+    };
   }, [viewingTomorrow]);
 
-  // Save current tasks state to localStorage
   useEffect(() => {
-    if (!viewingTomorrow) { // only save if not in preview mode
-      localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(healthTasks));
-    }
+    if (!viewingTomorrow) localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(healthTasks));
   }, [healthTasks, viewingTomorrow]);
   useEffect(() => {
-    if (!viewingTomorrow) { // only save if not in preview mode
-      localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(ecoTasks));
-    }
+    if (!viewingTomorrow) localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(ecoTasks));
   }, [ecoTasks, viewingTomorrow]);
 
-  // ---------- Update daily log (today only) ----------
   useEffect(() => {
     const todayK = dateKey();
     setDailyLog(prev => {
@@ -179,20 +189,45 @@ export default function TasksPage() {
     });
   }, [todaysCompleted]);
 
-  // ---------- Toggle helpers (disabled in tomorrow preview) ----------
+  // Toggle & Reset (disabled in tomorrow preview)
   function toggleTask(section: 'health' | 'eco', id: string) {
-    if (viewingTomorrow) return; // lock in preview mode
-    const applyToggle = (tasks: Task[]) => tasks.map(t => (t.id === id ? { ...t, completed: !t.completed } : t));
+    if (viewingTomorrow) return;
+    playClickIfEnabled();
+
     if (section === 'health') {
-      const updated = applyToggle(healthTasks);
+      const updated = healthTasks.map(t => {
+        if (t.id !== id) return t;
+        const nowCompleted = !t.completed;
+        if (!t.completed && nowCompleted) celebrateIfEnabled();
+        return { ...t, completed: nowCompleted };
+      });
       setHealthTasks(updated);
+      saveAndNotify(STORAGE_KEYS.HEALTH, updated);
     } else {
-      const updated = applyToggle(ecoTasks);
+      const updated = ecoTasks.map(t => {
+        if (t.id !== id) return t;
+        const nowCompleted = !t.completed;
+        if (!t.completed && nowCompleted) celebrateIfEnabled();
+        return { ...t, completed: nowCompleted };
+      });
       setEcoTasks(updated);
+      saveAndNotify(STORAGE_KEYS.ECO, updated);
     }
   }
 
-  // ---------- Displayed lists ----------
+  function resetSection(section: 'health' | 'eco') {
+    if (viewingTomorrow) return;
+    if (section === 'health') {
+      const reset = healthTasks.map(t => ({ ...t, completed: false }));
+      setHealthTasks(reset);
+      saveAndNotify(STORAGE_KEYS.HEALTH, reset);
+    } else {
+      const reset = ecoTasks.map(t => ({ ...t, completed: false }));
+      setEcoTasks(reset);
+      saveAndNotify(STORAGE_KEYS.ECO, reset);
+    }
+  }
+
   const displayedHealth = useMemo(
     () => (viewingTomorrow ? healthTasks.map(t => ({ ...t, completed: false })) : healthTasks),
     [healthTasks, viewingTomorrow]
@@ -202,22 +237,20 @@ export default function TasksPage() {
     [ecoTasks, viewingTomorrow]
   );
 
-  // ---------- Auto-scroll to section (from ?section=health|eco) ----------
   useEffect(() => {
     const section = searchParams.get('section');
     if (!section) return;
     const el = document.getElementById(section);
-    if (el) {
-      setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
-    }
+    if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }, [searchParams]);
 
-  // ---------- Switcher helpers ----------
   function setWhen(when: 'today' | 'tomorrow') {
     const params = new URLSearchParams(Array.from(searchParams.entries()));
     if (when === 'tomorrow') params.set('when', 'tomorrow');
     else params.delete('when');
-    router.replace(`/tasks?${params.toString()}`);
+    const qs = params.toString();
+    const url = qs ? `/tasks?${qs}` : '/tasks';
+    router.replace(url);
   }
 
   const subTitle = viewingTomorrow
@@ -225,12 +258,12 @@ export default function TasksPage() {
     : `View and manage today's Health & Eco tasks (${formatNice(today)})`;
 
   return (
-    <div className="flex min-h-screen bg-gradient-to-b from-slate-50 to-white">
+    <div className="flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
         <TopBar title="All Tasks" subtitle={subTitle} />
 
-        <main className="max-w-6xl mx-auto py-8 px-4 space-y-8">
+        <PageShell className="max-w-6xl mx-auto py-8 px-4 space-y-8">
           {/* View switcher */}
           <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 p-3 shadow-sm">
             <div className="flex items-center gap-2 text-slate-700">
@@ -265,7 +298,24 @@ export default function TasksPage() {
             iconColor="text-pink-600"
             iconBgColor="bg-pink-100"
           >
-            <div id="health" className="space-y-3 mt-4">
+            <div className="mt-2 mb-3 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                {healthCompleted}/{healthTasks.length} completed
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => resetSection('health')}
+                disabled={viewingTomorrow || healthCompleted === 0}
+                title={viewingTomorrow ? 'Available tomorrow' : 'Reset all Health tasks for today'}
+                className="inline-flex items-center gap-1"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset
+              </Button>
+            </div>
+
+            <div id="health" className="space-y-3">
               {displayedHealth.map(task => (
                 <div
                   key={task.id}
@@ -297,7 +347,24 @@ export default function TasksPage() {
             iconColor="text-green-600"
             iconBgColor="bg-green-100"
           >
-            <div id="eco" className="space-y-3 mt-4">
+            <div className="mt-2 mb-3 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                {ecoCompleted}/{ecoTasks.length} completed
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => resetSection('eco')}
+                disabled={viewingTomorrow || ecoCompleted === 0}
+                title={viewingTomorrow ? 'Available tomorrow' : 'Reset all Eco tasks for today'}
+                className="inline-flex items-center gap-1"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset
+              </Button>
+            </div>
+
+            <div id="eco" className="space-y-3">
               {displayedEco.map(task => (
                 <div
                   key={task.id}
@@ -320,7 +387,7 @@ export default function TasksPage() {
               ))}
             </div>
           </DashboardCard>
-        </main>
+        </PageShell>
       </div>
     </div>
   );

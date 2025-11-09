@@ -78,24 +78,50 @@
   body { @apply bg-background text-foreground antialiased; }
 }
 
+/* ---------- Background Effects (no grid) ---------- */
+.ewc-mesh {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  pointer-events: none;
+  background-image:
+    radial-gradient(at 40% 20%, rgba(16, 185, 129, 0.25) 0px, transparent 50%),
+    radial-gradient(at 80% 0%, rgba(59, 130, 246, 0.25) 0px, transparent 50%),
+    radial-gradient(at 0% 50%, rgba(236, 72, 153, 0.25) 0px, transparent 50%);
+  background-size: 200% 200%;
+  animation: mesh-animation 15s ease infinite;
+}
+
+/* REMOVED: .ewc-grid (this drew the 40px cells) */
+
+.ewc-noise {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.3;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  filter: contrast(150%) brightness(150%);
+}
+
+@keyframes mesh-animation {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 /* ---------- Motion-safe helpers ---------- */
 @media (prefers-reduced-motion: reduce) {
   .blob, .gradient-wash, .bg-text-gradient { animation: none !important; }
 }
 
-/* ---------- Background: subtle grid & animated gradient wash ---------- */
-.grid-bg {
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(2,6,23,0.08) 1px, transparent 0),
-    radial-gradient(circle at 1px 1px, rgba(2,6,23,0.05) 1px, transparent 0);
-  background-size: 26px 26px, 52px 52px;
-  background-position: 0 0, 13px 13px;
-}
+/* REMOVED: .grid-bg (this drew the radial tiled grid) */
 
 .gradient-wash {
   pointer-events: none;
-  background: radial-gradient(60% 60% at 50% 20%, rgba(16,185,129,0.15) 0%, transparent 60%),
-              radial-gradient(40% 40% at 80% 70%, rgba(59,130,246,0.12) 0%, transparent 60%);
+  background:
+    radial-gradient(60% 60% at 50% 20%, rgba(16,185,129,0.15) 0%, transparent 60%),
+    radial-gradient(40% 40% at 80% 70%, rgba(59,130,246,0.12) 0%, transparent 60%);
   animation: wash 12s linear infinite alternate;
 }
 @keyframes wash {
@@ -126,9 +152,9 @@
   animation: blob-float 18s ease-in-out infinite;
   transform: translateZ(0);
 }
-.blob-green { background: radial-gradient(circle at 30% 30%, #22c55e, transparent 60%); top: -8rem; left: -6rem; }
-.blob-emerald { background: radial-gradient(circle at 70% 40%, #10b981, transparent 60%); top: 35vh; right: -10rem; animation-delay: 2.2s; }
-.blob-sky { background: radial-gradient(circle at 50% 50%, #38bdf8, transparent 60%); bottom: -10rem; left: 15%; animation-delay: 4.1s; }
+.blob-green  { background: radial-gradient(circle at 30% 30%, #22c55e, transparent 60%); top: -8rem; left: -6rem; }
+.blob-emerald{ background: radial-gradient(circle at 70% 40%, #10b981, transparent 60%); top: 35vh; right: -10rem; animation-delay: 2.2s; }
+.blob-sky    { background: radial-gradient(circle at 50% 50%, #38bdf8, transparent 60%); bottom: -10rem; left: 15%; animation-delay: 4.1s; }
 
 @keyframes blob-float {
   0%   { transform: translate(0, 0) scale(1); }
@@ -178,6 +204,4 @@
 .btn-primary:active { transform: translateY(0); }
 
 /* Utility: better text-wrap for long hero copy */
-.text-balance {
-  text-wrap: balance;
-}
+.text-balance { text-wrap: balance; }
