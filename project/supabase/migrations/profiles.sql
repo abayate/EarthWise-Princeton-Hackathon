@@ -4,6 +4,7 @@
 create table if not exists public.profiles (
   id uuid not null,
   created_at timestamp with time zone null default now(),
+  username text null,
   full_name text null,
   email text null,
   location text null,
@@ -21,7 +22,8 @@ create table if not exists public.profiles (
   last_activity_date date null,
   month_points integer null default 0,
   streak integer null,
-  constraint profiles_pkey primary key (id)
+  constraint profiles_pkey primary key (id),
+  constraint username_unique unique (username)
 ) TABLESPACE pg_default;
 
 -- Enable Row Level Security (RLS) - keep it enabled, but allow service_role to bypass
@@ -51,6 +53,31 @@ create policy "Delete own profile"
   on public.profiles
   for delete
   using (auth.uid()::uuid = id);
+
+-- ============================================
+-- AUTO-CREATE PROFILE ON USER SIGNUP
+-- ============================================
+-- This function automatically creates a profile when a new user signs up
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.profiles (id, email, full_name, created_at, updated_at)
+  values (
+    new.id,
+    new.email,
+    coalesce(new.raw_user_meta_data->>'name', new.raw_user_meta_data->>'full_name'),
+    now(),
+    now()
+  );
+  return new;
+end;
+$$ language plpgsql security definer;
+
+-- Trigger the function every time a user is created
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
 
 -- Example seed (replace uuid with a real auth user id):
 /*

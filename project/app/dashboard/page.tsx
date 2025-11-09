@@ -32,6 +32,7 @@ const PROFILE_KEY = 'EW_PROFILE_V1';
 const LB_POINTS_KEY = 'EW_TODAYS_POINTS_V1';          // carries MONTHLY points for leaderboard
 const AWARDED_TODAY_KEY = 'EW_TODAYS_AWARDED_V1';     // monotonic awarded points for current day
 const AWARDED_IDS_KEY = 'EW_TODAYS_AWARDED_IDS_V1';   // task ids already awarded today
+const COMPLETED_DATE_KEY = 'EW_TASKS_COMPLETED_DATE_V1'; // date when all tasks were completed
 const LB_DATA_KEY   = 'EW_LEADERBOARD_DATA_V1';
 const MONTHLY_POINTS_KEY = 'EW_MONTHLY_POINTS_V1';    // number (monthly sum)
 const TOTAL_POINTS_KEY   = 'EW_TOTAL_POINTS_V1';      // number (lifetime sum)
@@ -530,6 +531,7 @@ function CurrentTaskCard({
   total,
   onToggle,
   focusActive,
+  allDone,
 }: {
   section: 'health' | 'eco';
   task?: Task;
@@ -537,6 +539,7 @@ function CurrentTaskCard({
   total: number;
   onToggle: () => void;
   focusActive: boolean;
+  allDone?: boolean;
 }) {
   const a = accent(section);
   return (
@@ -558,14 +561,16 @@ function CurrentTaskCard({
           Task {index + 1} of {total}
         </p>
       </div>
-      <Button
-        size="sm"
-        variant={task?.completed ? 'default' : 'outline'}
-        onClick={onToggle}
-        aria-label={task?.completed ? 'Undo task' : 'Complete task'}
-      >
-        {task?.completed ? 'Undo' : 'Complete'}
-      </Button>
+      {!allDone && (
+        <Button
+          size="sm"
+          variant={task?.completed ? 'default' : 'outline'}
+          onClick={onToggle}
+          aria-label={task?.completed ? 'Undo task' : 'Complete task'}
+        >
+          {task?.completed ? 'Undo' : 'Complete'}
+        </Button>
+      )}
     </div>
   );
 }
@@ -668,6 +673,8 @@ export default function DashboardPage() {
   const [totalDbTasks, setTotalDbTasks] = useState<number | null>(null);
   // Total points from task_completions table
   const [totalPointsFromDb, setTotalPointsFromDb] = useState<number | null>(null);
+  // Current streak from database
+  const [currentStreakFromDb, setCurrentStreakFromDb] = useState<number | null>(null);
   // Track if we're currently saving points
   const [isSavingPoints, setIsSavingPoints] = useState(false);
 
@@ -785,6 +792,7 @@ export default function DashboardPage() {
             const last = dbProfile.last_activity_date as string | null;
             setTodaysDbPoints(last === todayStr ? Math.max(0, fromDb) : 0);
             setTotalDbTasks(Number(dbProfile.total_tasks ?? 0));
+            setCurrentStreakFromDb(Number(dbProfile.current_streak ?? 0));
           }
 
           // Fetch total points from task_completions table
@@ -888,6 +896,7 @@ export default function DashboardPage() {
           setAwardedIds([]);
           localStorage.setItem(AWARDED_TODAY_KEY, '0');
           localStorage.setItem(AWARDED_IDS_KEY, '[]');
+          localStorage.removeItem(COMPLETED_DATE_KEY); // Clear completion date on new day
           awardedTodayRef.current = 0;
           awardedIdsRef.current = [];
           setTodaysDbPoints(0);
@@ -1022,12 +1031,21 @@ export default function DashboardPage() {
     return BASE_TOTAL_TASKS + completedCountToday; // fallback
   }, [totalDbTasks, completedCountToday]);
 
-  const currentStreak = useMemo(() => computeStreak(dailyLog), [dailyLog]);
+  // Use streak from database if available, otherwise compute from dailyLog
+  const currentStreak = currentStreakFromDb !== null ? currentStreakFromDb : computeStreak(dailyLog);
 
   const healthCompleted = healthTasks.filter((t) => t.completed).length;
   const ecoCompleted = ecoTasks.filter((t) => t.completed).length;
   const healthAllDone = healthTasks.length > 0 && healthCompleted === healthTasks.length;
   const ecoAllDone = ecoTasks.length > 0 && ecoCompleted === ecoTasks.length;
+
+  // Save completion date when all tasks in both sections are done
+  useEffect(() => {
+    if (healthAllDone && ecoAllDone) {
+      const today = dateKey();
+      localStorage.setItem(COMPLETED_DATE_KEY, today);
+    }
+  }, [healthAllDone, ecoAllDone]);
 
   /* ---- cross-tab + same-window sync ---- */
   useEffect(() => {
@@ -1159,22 +1177,28 @@ export default function DashboardPage() {
       if (!userId) return;
       const { data: row } = await supabase
         .from('profiles')
-        .select('todays_points, month_points, total_points, total_tasks')
+        .select('todays_points, month_points, total_points, total_tasks, last_activity_date, current_streak')
         .eq('id', userId)
         .maybeSingle();
       
       if (row) {
         const todayStr = dateKey();
-        const last = (row as any).last_activity_date as string | null;
+        const last = (row.last_activity_date as string | null) || null;
         const sameDay = last === todayStr;
         
-        setTodaysDbPoints(sameDay ? Math.max(0, Number(row.todays_points ?? 0)) : 0);
+        const todaysPoints = sameDay ? Math.max(0, Number(row.todays_points ?? 0)) : 0;
+        setTodaysDbPoints(todaysPoints);
         setTotalPointsFromDb(Math.max(0, Number(row.total_points ?? 0)));
         setTotalDbTasks(Math.max(0, Number(row.total_tasks ?? 0)));
+        setCurrentStreakFromDb(Math.max(0, Number(row.current_streak ?? 0)));
+        
         console.log('✓ Refetched points from database:', {
-          todays: row.todays_points,
+          todays: todaysPoints,
           total: row.total_points,
-          tasks: row.total_tasks
+          tasks: row.total_tasks,
+          streak: row.current_streak,
+          sameDay,
+          last
         });
       }
     } catch (e) {
@@ -1218,7 +1242,7 @@ export default function DashboardPage() {
       
       const { data: row, error } = await supabase
         .from('profiles')
-        .select('todays_points, month_points, total_points, last_activity_date, total_tasks')
+        .select('todays_points, month_points, total_points, last_activity_date, total_tasks, current_streak')
         .eq('id', userId)
         .maybeSingle();
       
@@ -1226,6 +1250,9 @@ export default function DashboardPage() {
         console.error('Error fetching profile for points update:', error);
         return;
       }
+      
+      const todayStr = dateKey();
+      const last = (row?.last_activity_date as string | null) || null;
       
       // If no profile exists, create one
       if (!row) {
@@ -1238,7 +1265,8 @@ export default function DashboardPage() {
             month_points: Math.max(0, delta),
             total_points: Math.max(0, delta),
             total_tasks: Math.max(0, taskDelta),
-            last_activity_date: dateKey(),
+            current_streak: 1,
+            last_activity_date: todayStr,
           });
         
         if (insertError) {
@@ -1248,26 +1276,60 @@ export default function DashboardPage() {
         }
         return;
       }
-      const todayStr = dateKey();
-      const last = (row?.last_activity_date as string | null) || null;
+
       const sameDay = last === todayStr;
+      
+      // Check if it's the same month
       const sameMonth = (() => {
         if (!last) return true;
         const [ly, lm] = last.split('-');
         const [ty, tm] = todayStr.split('-');
         return ly === ty && lm === tm;
       })();
+
+      // Calculate streak
+      const wasYesterday = (() => {
+        if (!last) return false;
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        return last === dateKey(yesterday);
+      })();
+
+      const currentStreak = Number(row?.current_streak ?? 0);
+      let nextStreak = currentStreak;
+      
+      // Only update streak if this is a new day with task completion (delta > 0)
+      if (!sameDay && delta > 0) {
+        if (wasYesterday) {
+          // Continue streak
+          nextStreak = currentStreak + 1;
+        } else if (last === null || currentStreak === 0) {
+          // Start new streak
+          nextStreak = 1;
+        } else {
+          // Streak broken, reset to 1
+          nextStreak = 1;
+        }
+      } else if (sameDay && currentStreak === 0 && delta > 0) {
+        // First task of the day ever
+        nextStreak = 1;
+      }
+
       const currentToday = Math.max(0, Number(row?.todays_points ?? 0));
       const currentMonth = Math.max(0, Number(row?.month_points ?? 0));
       const currentTotal = Math.max(0, Number(row?.total_points ?? 0));
       const currentTasks = Math.max(0, Number(row?.total_tasks ?? 0));
 
+      // Reset today's points if it's a new day
       const nextToday = Math.max(0, (sameDay ? currentToday : 0) + delta);
+      // Reset month points if it's a new month
       const nextMonth = Math.max(0, (sameMonth ? currentMonth : 0) + delta);
+      // Total points always accumulate
       const nextTotal = Math.max(0, currentTotal + delta);
+      // Total tasks always accumulate
       const nextTasks = Math.max(0, currentTasks + taskDelta);
 
-      console.log('Updating points:', { 
+      console.log('Updating profile:', { 
         userId, 
         delta, 
         taskDelta,
@@ -1276,7 +1338,11 @@ export default function DashboardPage() {
         currentMonth, 
         nextMonth,
         currentTotal,
-        nextTotal 
+        nextTotal,
+        currentStreak,
+        nextStreak,
+        sameDay,
+        wasYesterday
       });
 
       const { error: updateError } = await supabase
@@ -1286,14 +1352,16 @@ export default function DashboardPage() {
           month_points: nextMonth,
           total_points: nextTotal,
           total_tasks: nextTasks,
+          current_streak: nextStreak,
           last_activity_date: todayStr,
+          updated_at: new Date().toISOString(),
         })
         .eq('id', userId);
       
       if (updateError) {
-        console.error('Error updating profile points:', updateError);
+        console.error('Error updating profile:', updateError);
       } else {
-        console.log('✓ Points updated successfully');
+        console.log('✓ Profile updated successfully');
       }
     } catch (e) {
       console.error('applyPointsDelta failed:', e);
@@ -1354,51 +1422,53 @@ export default function DashboardPage() {
             })
           );
 
-          // Award points only the first time this task is completed today
-          if (!awardedIdsRef.current.includes(current.id)) {
-            const nextAwarded = awardedTodayRef.current + current.points;
-            setAwardedToday(nextAwarded);
-            const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
-            setAwardedIds(nextIds);
-            try {
-              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-            } catch {}
-            // Insert into task_completions table
-            if (userId) {
-              void supabase.from('task_completions').insert({
-                user_id: userId,
-                task_id: current.id,
-                points: current.points,
-              });
-              // Refetch total points from task_completions
-              void refetchTotalPoints();
-            }
-            // Push to Supabase and reflect locally
-            // Update DB and immediately update local state
-            applyPointsDelta(current.points, 1).then(() => {
-              // Force refresh the points display by fetching latest from DB
-              refetchTodaysPoints();
+          // Award points EVERY time a task is completed (removed the check for first-time only)
+          const nextAwarded = awardedTodayRef.current + current.points;
+          setAwardedToday(nextAwarded);
+          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+          setAwardedIds(nextIds);
+          try {
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+          } catch {}
+          // Insert into task_completions table
+          if (userId) {
+            void supabase.from('task_completions').insert({
+              user_id: userId,
+              task_id: current.id,
+              points: current.points,
             });
-            setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
-            setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+            // Refetch total points from task_completions
+            void refetchTotalPoints();
+          }
+          // Push to Supabase and reflect locally
+          // Update DB and immediately update local state
+          const currentDbPoints = todaysDbPoints ?? 0;
+          const newDbPoints = currentDbPoints + current.points;
+          setTodaysDbPoints(newDbPoints);
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : 1));
+          
+          // Apply to database
+          applyPointsDelta(current.points, 1).then(() => {
+            // Force refresh the points display by fetching latest from DB
+            refetchTodaysPoints();
+          });
 
-            // Milestone notification based on awarded points
-            if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
-              const hit = Math.floor(nextAwarded / 100) * 100;
-              try {
-                window.dispatchEvent(
-                  new CustomEvent('notify', {
-                    detail: {
-                      title: 'Points milestone reached',
-                      description: `Nice! You hit ${hit} pts today.`,
-                      level: 'success',
-                      href: '/dashboard',
-                    },
-                  })
-                );
-              } catch {}
-            }
+          // Milestone notification based on awarded points
+          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+            const hit = Math.floor(nextAwarded / 100) * 100;
+            try {
+              window.dispatchEvent(
+                new CustomEvent('notify', {
+                  detail: {
+                    title: 'Points milestone reached',
+                    description: `Nice! You hit ${hit} pts today.`,
+                    level: 'success',
+                    href: '/dashboard',
+                  },
+                })
+              );
+            } catch {}
           }
 
           const entry = buildEntry(
@@ -1421,11 +1491,17 @@ export default function DashboardPage() {
               localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
               localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
             } catch {}
+            
+            // Update local state immediately
+            const currentDbPoints = todaysDbPoints ?? 0;
+            const newDbPoints = Math.max(0, currentDbPoints - current.points);
+            setTodaysDbPoints(newDbPoints);
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : 0));
+            
+            // Apply to database
             applyPointsDelta(-current.points, -1).then(() => {
               refetchTodaysPoints();
             });
-            setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
-            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
           }
         }
         return updated;
@@ -1460,46 +1536,51 @@ export default function DashboardPage() {
             })
           );
 
-          if (!awardedIdsRef.current.includes(current.id)) {
-            const nextAwarded = awardedTodayRef.current + current.points;
-            setAwardedToday(nextAwarded);
-            const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
-            setAwardedIds(nextIds);
-            try {
-              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-            } catch {}
-            // Insert into task_completions table
-            if (userId) {
-              void supabase.from('task_completions').insert({
-                user_id: userId,
-                task_id: current.id,
-                points: current.points,
-              });
-              // Refetch total points from task_completions
-              void refetchTotalPoints();
-            }
-            applyPointsDelta(current.points, 1).then(() => {
-              refetchTodaysPoints();
+          // Award points EVERY time a task is completed
+          const nextAwarded = awardedTodayRef.current + current.points;
+          setAwardedToday(nextAwarded);
+          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+          setAwardedIds(nextIds);
+          try {
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+          } catch {}
+          // Insert into task_completions table
+          if (userId) {
+            void supabase.from('task_completions').insert({
+              user_id: userId,
+              task_id: current.id,
+              points: current.points,
             });
-            setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
-            setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+            // Refetch total points from task_completions
+            void refetchTotalPoints();
+          }
+          
+          // Update local state immediately for instant feedback
+          const currentDbPoints = todaysDbPoints ?? 0;
+          const newDbPoints = currentDbPoints + current.points;
+          setTodaysDbPoints(newDbPoints);
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : 1));
+          
+          // Apply to database
+          applyPointsDelta(current.points, 1).then(() => {
+            refetchTodaysPoints();
+          });
 
-            if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
-              const hit = Math.floor(nextAwarded / 100) * 100;
-              try {
-                window.dispatchEvent(
-                  new CustomEvent('notify', {
-                    detail: {
-                      title: 'Points milestone reached',
-                      description: `Nice! You hit ${hit} pts today.`,
-                      level: 'success',
-                      href: '/dashboard',
-                    },
-                  })
-                );
-              } catch {}
-            }
+          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+            const hit = Math.floor(nextAwarded / 100) * 100;
+            try {
+              window.dispatchEvent(
+                new CustomEvent('notify', {
+                  detail: {
+                    title: 'Points milestone reached',
+                    description: `Nice! You hit ${hit} pts today.`,
+                    level: 'success',
+                    href: '/dashboard',
+                  },
+                })
+              );
+            } catch {}
           }
 
           const entry = buildEntry(
@@ -1521,11 +1602,17 @@ export default function DashboardPage() {
               localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
               localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
             } catch {}
+            
+            // Update local state immediately
+            const currentDbPoints = todaysDbPoints ?? 0;
+            const newDbPoints = Math.max(0, currentDbPoints - current.points);
+            setTodaysDbPoints(newDbPoints);
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : 0));
+            
+            // Apply to database
             applyPointsDelta(-current.points, -1).then(() => {
               refetchTodaysPoints();
             });
-            setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
-            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
           }
         }
         return updated;
@@ -1811,17 +1898,19 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <ModeToggle section="health" mode={healthMode} />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleReset('health')}
-                      aria-label="Reset all Health tasks"
-                      title="Reset all Health tasks"
-                      className="flex items-center gap-1"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      Reset
-                    </Button>
+                    {!healthAllDone && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleReset('health')}
+                        aria-label="Reset all Health tasks"
+                        title="Reset all Health tasks"
+                        className="flex items-center gap-1"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        Reset
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -1844,6 +1933,7 @@ export default function DashboardPage() {
                         total={healthTasks.length}
                         onToggle={() => handleToggleAndAutoAdvance('health')}
                         focusActive={healthMode === 'focus'}
+                        allDone={healthAllDone}
                       />
 
                       {/* Carousel Controls */}
@@ -1878,9 +1968,12 @@ export default function DashboardPage() {
 
                       {/* All done helper */}
                       {healthAllDone && (
-                        <p className="mt-2 text-xs text-slate-500">
-                          All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
-                        </p>
+                        <div className="mt-4 rounded-lg bg-emerald-50 border border-emerald-200 p-4 text-center">
+                          <p className="text-lg font-semibold text-emerald-700">🎉 Congratulations!</p>
+                          <p className="text-sm text-emerald-600 mt-1">
+                            You have completed all of your Health tasks today!
+                          </p>
+                        </div>
                       )}
                     </div>
 
@@ -1919,17 +2012,19 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <ModeToggle section="eco" mode={ecoMode} />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleReset('eco')}
-                      aria-label="Reset all Eco tasks"
-                      title="Reset all Eco tasks"
-                      className="flex items-center gap-1"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      Reset
-                    </Button>
+                    {!ecoAllDone && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleReset('eco')}
+                        aria-label="Reset all Eco tasks"
+                        title="Reset all Eco tasks"
+                        className="flex items-center gap-1"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        Reset
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -1952,6 +2047,7 @@ export default function DashboardPage() {
                         total={ecoTasks.length}
                         onToggle={() => handleToggleAndAutoAdvance('eco')}
                         focusActive={ecoMode === 'focus'}
+                        allDone={ecoAllDone}
                       />
 
                       {/* Carousel Controls */}
@@ -1985,9 +2081,12 @@ export default function DashboardPage() {
                       )}
 
                       {ecoAllDone && (
-                        <p className="mt-2 text-xs text-slate-500">
-                          All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
-                        </p>
+                        <div className="mt-4 rounded-lg bg-emerald-50 border border-emerald-200 p-4 text-center">
+                          <p className="text-lg font-semibold text-emerald-700">🎉 Congratulations!</p>
+                          <p className="text-sm text-emerald-600 mt-1">
+                            You have completed all of your Eco tasks today!
+                          </p>
+                        </div>
                       )}
                     </div>
 

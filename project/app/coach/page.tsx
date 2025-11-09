@@ -82,7 +82,7 @@ export default function CoachPage() {
               <h2 className="text-lg font-semibold text-slate-900">AI Assistant</h2>
               <p className="text-sm text-slate-600">Chat with your eco-wellness coach</p>
             </div>
-            <NovaActButton />
+            {/* Removed Amazon Nova button. Only Gemini chat remains. */}
           </div>
 
           <div className="h-[calc(100vh-240px)]">

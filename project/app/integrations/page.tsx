@@ -158,7 +158,7 @@ export default function IntegrationsPage() {
               </span>
             </div>
             <h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-              Connect your tools to power EcoLife Coach
+              Connect your tools to power EarthWise
             </h1>
             <p className="mt-2 max-w-2xl text-slate-700">
               This app blends wellness + sustainability with an AI coach. Below are the

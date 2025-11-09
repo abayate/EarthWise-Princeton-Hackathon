@@ -25,9 +25,10 @@ export default function ChatWindow() {
     },
   ]);
   const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
 
     const userMessage: Message = {
       id: `${Date.now()}`,
@@ -37,18 +38,55 @@ export default function ChatWindow() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const userInput = input;
     setInput('');
+    setIsLoading(true);
 
-    // Simulate assistant response
-    setTimeout(() => {
+    try {
+      // Get user profile from localStorage if available
+      const profileRaw = typeof window !== 'undefined' ? localStorage.getItem('ew_profile_v1') : null;
+      const userProfile = profileRaw ? JSON.parse(profileRaw) : {};
+
+      const res = await fetch('/api/coach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userMessage: userInput,
+          userProfile,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        const errorMessage: Message = {
+          id: `${Date.now()}-error`,
+          role: 'assistant',
+          content: `I'm having trouble reaching the AI service. ${data?.details ? `Details: ${data.details}` : ''}`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        return;
+      }
+
       const assistantMessage: Message = {
         id: `${Date.now()}-assistant`,
         role: 'assistant',
-        content: "Thanks for your message! I'm here to help you with eco-friendly habits and wellness tips.",
+        content: data.text || "I'm here to help! Let me know what you'd like to work on.",
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
-    }, 500);
+    } catch (error) {
+      console.error('Chat error:', error);
+      const errorMessage: Message = {
+        id: `${Date.now()}-error`,
+        role: 'assistant',
+        content: "I'm having trouble connecting right now, but I'm here to help! Try asking me about sustainable habits, eco-friendly tips, or wellness advice.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGeneratePlan = async () => {
@@ -141,14 +179,17 @@ export default function ChatWindow() {
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
               placeholder="Ask your coach anything..."
               className="flex-1"
+              disabled={isLoading}
             />
-            <Button onClick={handleSend} size="icon">
-              <Send className="w-4 h-4" />
-            </Button>
-            <Button onClick={handleGeneratePlan} variant="outline">
-              Generate plan with Amazon Nova (mock)
+            <Button onClick={handleSend} size="icon" disabled={isLoading}>
+              {isLoading ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
             </Button>
           </div>
+          <p className="mt-2 text-xs text-slate-500 text-center">Powered by OpenAI</p>
         </div>
       </div>
   );
