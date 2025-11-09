@@ -1,121 +1,119 @@
-'use client';
+﻿"use client";
 
-import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Textarea } from '@/components/ui/textarea';
-import { useRouter } from 'next/navigation';
+import React from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 
-const SUSTAINABILITY_GOALS = [
-  'Reduce plastic',
-  'Lower energy use',
-  'Greener transportation',
-  'Eat plant-forward',
-  'Donate to eco orgs'
-];
-
-const CHARITIES = [
-  'Rainforest Alliance',
-  'Ocean Cleanup',
-  'Sierra Club',
-  'World Wildlife Fund'
-];
+const GOALS = ["Reduce plastic", "Lower energy use", "Eco transportation"];
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [goals, setGoals] = useState<string[]>(['Reduce plastic']);
-  const [interests, setInterests] = useState('');
-  const [preferredCharities, setPreferredCharities] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [step, setStep] = React.useState<1 | 2 | 3>(1);
+  const [name, setName] = React.useState("");
+  const [goals, setGoals] = React.useState<string[]>(["Reduce plastic"]);
+  const [insights, setInsights] = React.useState<any[]>([]);
 
-  const toggle = (list: string[], value: string) =>
-    list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
+  const toggleGoal = (g: string) =>
+    setGoals((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleProfileSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
+    setStep(2);
+  }
 
-    // get current user
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  async function handleConnectKnot() {
+    setStep(3);
 
-    // save profile details
-    await supabase.from('profiles').upsert({
-      id: user?.id,
-      full_name: name,
-      sustainability_goals: goals,
-      interests,
-      preferred_charities: preferredCharities,
+    const res = await fetch("/api/knot/sync", {
+      method: "POST",
+      body: JSON.stringify({ external_user_id: name || "demo-user" }),
     });
+    const data = await res.json();
+    setInsights(data.insights ?? []);
 
-    setLoading(false);
-    router.push('/dashboard');
+    if (typeof window !== "undefined") {
+      localStorage.setItem("earthwise:lastInsights", JSON.stringify(data.insights ?? []));
+    }
+
+    setTimeout(() => {
+      router.push("/dashboard");
+    }, 2800);
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white py-10 px-4">
-      <div className="max-w-3xl mx-auto bg-white/80 backdrop-blur rounded-2xl border border-emerald-100 p-8 shadow-sm">
-        <h1 className="text-2xl font-bold text-slate-900 mb-2">Tell us about your eco journey 🌍</h1>
-        <p className="text-slate-600 mb-6">
-          We'll personalize tasks, AI coaching, and impact numbers based on this.
-        </p>
-
-        <form className="space-y-6" onSubmit={handleSubmit}>
-          <div>
-            <label className="text-sm font-medium text-slate-800">Name</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-2" />
+    <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white flex items-center justify-center px-4 py-10">
+      <div className="w-full max-w-3xl">
+        {step === 1 && (
+          <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-8 space-y-6">
+            <h1 className="text-2xl font-bold text-slate-900">Tell us about you </h1>
+            <form className="space-y-6" onSubmit={handleProfileSubmit}>
+              <div>
+                <label className="text-sm font-medium text-slate-700">Name</label>
+                <Input className="mt-2" value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">What do you want to focus on?</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {GOALS.map((g) => (
+                    <label
+                      key={g}
+                      className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2 hover:border-emerald-300"
+                    >
+                      <Checkbox checked={goals.includes(g)} onCheckedChange={() => toggleGoal(g)} />
+                      <span className="text-sm text-slate-700">{g}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <Button type="submit" className="w-full">
+                Continue
+              </Button>
+            </form>
           </div>
+        )}
 
-          <div>
-            <p className="text-sm font-medium text-slate-800 mb-2">What do you want to focus on?</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {SUSTAINABILITY_GOALS.map((g) => (
-                <label
-                  key={g}
-                  className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2 hover:border-emerald-300"
-                >
-                  <Checkbox checked={goals.includes(g)} onCheckedChange={() => setGoals((s) => toggle(s, g))} />
-                  <span className="text-sm text-slate-700">{g}</span>
-                </label>
-              ))}
+        {step === 2 && (
+          <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-8 space-y-4 text-center">
+            <h2 className="text-xl font-semibold text-slate-900 mb-1">Connect your purchases</h2>
+            <p className="text-slate-600 mb-4">
+              We use Knot to read SKU-level data (Amazon, Costco, Walmart) so we can give you tasks that match what you
+              actually buy.
+            </p>
+            <div className="inline-flex items-center gap-3 rounded-full bg-emerald-50 px-4 py-2">
+              <img src="https://knotapi.com/favicon.ico" alt="Knot" className="w-5 h-5" />
+              <span className="text-sm font-medium text-emerald-700">Knot Transaction Link</span>
+            </div>
+            <Button onClick={handleConnectKnot} className="w-full mt-6">
+              Link with Knot
+            </Button>
+            <button
+              type="button"
+              onClick={() => setStep(3)}
+              className="text-xs text-slate-400 underline mt-2"
+            >
+              Skip for now
+            </button>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="relative">
+            <div className="fixed inset-0 bg-white/70 backdrop-blur flex flex-col items-center justify-center gap-6 z-50">
+              <div className="w-10 h-10 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm font-medium text-emerald-700">EarthWise is personalizing your journey</p>
+              <div className="space-y-3 max-h-64 overflow-y-auto w-96">
+                {insights.map((i, idx) => (
+                  <div key={idx} className="bg-white rounded-xl border border-emerald-50 shadow-sm p-3 text-left">
+                    <p className="text-sm font-semibold text-slate-900">{i.title}</p>
+                    <p className="text-xs text-slate-500">{i.detail}</p>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-
-          <div>
-            <p className="text-sm font-medium text-slate-800 mb-2">Pick charities to recommend + award points for</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {CHARITIES.map((c) => (
-                <label key={c} className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2">
-                  <Checkbox
-                    checked={preferredCharities.includes(c)}
-                    onCheckedChange={() =>
-                      setPreferredCharities((s) => toggle(s, c))
-                    }
-                  />
-                  <span className="text-sm text-slate-700">{c}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="text-sm font-medium text-slate-800">Anything we should know? (e.g. "I bike", "I buy from Costco", "I donate monthly")</label>
-            <Textarea
-              value={interests}
-              onChange={(e) => setInterests(e.target.value)}
-              className="mt-2"
-              rows={3}
-            />
-          </div>
-
-          <Button type="submit" disabled={loading} className="w-full">
-            {loading ? 'Saving...' : 'Finish setup'}
-          </Button>
-        </form>
+        )}
       </div>
     </div>
   );

@@ -90,7 +90,7 @@ function useTypewriter(text: string, speed = 18) {
 
 /* Leaderboard data (mock peers) */
 type LBUser = { id: number; name: string; score: number; avatar: string };
-const leaderboardData: LBUser[] = [
+const LB_SEED: LBUser[] = [
   { id: 1, name: "Alex Chen",    score: 2150, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" },
   { id: 2, name: "Sarah Miller", score: 1950, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah" },
   { id: 3, name: "James Wilson", score: 1840, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=James" },
@@ -105,16 +105,37 @@ const leaderboardData: LBUser[] = [
 
 export default function LeaderboardPage() {
   const [fullSubtitle, setFullSubtitle] = useState(INITIAL_SUBTITLE);
+  const [leaderboardData, setLeaderboardData] = useState<LBUser[]>(LB_SEED);
   const typedSubtitle = useTypewriter(fullSubtitle, 16);
 
   // Publish the static leaderboard so dashboard/sidebar can read it
+  // Fetch leaderboard from server API (falls back to LB_SEED)
   useEffect(() => {
-    try {
-      const compact = leaderboardData.map(({ id, name, score }) => ({ id, name, score }));
-      localStorage.setItem(LB_DATA_KEY, JSON.stringify(compact));
-      // also fire same-tab storage-like event
-      window.dispatchEvent(new StorageEvent('storage', { key: LB_DATA_KEY, newValue: JSON.stringify(compact) }));
-    } catch {}
+    let cancelled = false;
+    async function fetchBoard() {
+      try {
+        const res = await fetch('/api/leaderboard');
+        if (!res.ok) throw new Error('Failed to load leaderboard');
+        const json = await res.json();
+        const data = Array.isArray(json?.data) ? json.data.map((u: any) => ({ id: Number(u.id), name: String(u.name), score: Number(u.score), avatar: String(u.avatar) })) : LB_SEED;
+        if (!cancelled) setLeaderboardData(data);
+        // persist compact form for other tabs (Dashboard expects LB_DATA_KEY)
+        try {
+          const compact = data.map(({ id, name, score }) => ({ id, name, score }));
+          localStorage.setItem(LB_DATA_KEY, JSON.stringify(compact));
+          window.dispatchEvent(new StorageEvent('storage', { key: LB_DATA_KEY, newValue: JSON.stringify(compact) }));
+        } catch {}
+      } catch (e) {
+        // fallback: publish seed
+        try {
+          const compact = LB_SEED.map(({ id, name, score }) => ({ id, name, score }));
+          localStorage.setItem(LB_DATA_KEY, JSON.stringify(compact));
+          window.dispatchEvent(new StorageEvent('storage', { key: LB_DATA_KEY, newValue: JSON.stringify(compact) }));
+        } catch {}
+      }
+    }
+    fetchBoard();
+    return () => { cancelled = true; };
   }, []);
 
   // My score is MONTHLY points only

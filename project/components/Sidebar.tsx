@@ -55,6 +55,7 @@ const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/tasks', label: 'Tasks', icon: Calendar },
   { href: '/coach', label: 'Coach', icon: MessageSquare },
+  { href: '/insights', label: 'Insights', icon: Trophy },
   { href: '/settings', label: 'Settings', icon: Settings },
   { href: '/leaderboard', label: 'Monthly Leaderboard', icon: Trophy },
 ];

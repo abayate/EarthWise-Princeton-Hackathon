@@ -528,16 +528,14 @@ function CurrentTaskCard({
   task,
   index,
   total,
-  onComplete,
-  onUndo,
+  onToggle,
   focusActive,
 }: {
   section: 'health' | 'eco';
   task?: Task;
   index: number;
   total: number;
-  onComplete: () => void;
-  onUndo: () => void;
+  onToggle: () => void;
   focusActive: boolean;
 }) {
   const a = accent(section);
@@ -560,27 +558,14 @@ function CurrentTaskCard({
           Task {index + 1} of {total}
         </p>
       </div>
-      <div className="flex items-center gap-2">
-        {task?.completed ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onUndo}
-            aria-label="Undo task completion"
-          >
-            Undo
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="default"
-            onClick={onComplete}
-            aria-label="Complete task"
-          >
-            Complete
-          </Button>
-        )}
-      </div>
+      <Button
+        size="sm"
+        variant={task?.completed ? 'default' : 'outline'}
+        onClick={onToggle}
+        aria-label={task?.completed ? 'Undo task' : 'Complete task'}
+      >
+        {task?.completed ? 'Undo' : 'Complete'}
+      </Button>
     </div>
   );
 }
@@ -681,6 +666,10 @@ export default function DashboardPage() {
   const [todaysDbPoints, setTodaysDbPoints] = useState<number | null>(null);
   // Reflect DB-backed lifetime total tasks
   const [totalDbTasks, setTotalDbTasks] = useState<number | null>(null);
+  // Total points from task_completions table
+  const [totalPointsFromDb, setTotalPointsFromDb] = useState<number | null>(null);
+  // Track if we're currently saving points
+  const [isSavingPoints, setIsSavingPoints] = useState(false);
 
   // Monotonic awarded points and awarded ids for today
   const [awardedToday, setAwardedToday] = useState<number>(0);
@@ -736,6 +725,29 @@ export default function DashboardPage() {
   useEffect(() => { awardedTodayRef.current = awardedToday; }, [awardedToday]);
   useEffect(() => { awardedIdsRef.current = awardedIds; }, [awardedIds]);
 
+  /* ====== NEW: pulse ring control for Health card ====== */
+  const [healthPulse, setHealthPulse] = useState(false);
+  const pulseTimerRef = useRef<number | null>(null);
+  const [healthPulseKey, setHealthPulseKey] = useState(0);
+  function triggerHealthPulse() {
+    // restart animation by remounting the span
+    setHealthPulseKey((k) => k + 1);
+    setHealthPulse(true);
+    if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current);
+    pulseTimerRef.current = window.setTimeout(() => setHealthPulse(false), 950);
+  }
+
+  /* ====== NEW: pulse ring control for Eco card ====== */
+  const [ecoPulse, setEcoPulse] = useState(false);
+  const ecoPulseTimerRef = useRef<number | null>(null);
+  const [ecoPulseKey, setEcoPulseKey] = useState(0);
+  function triggerEcoPulse() {
+    setEcoPulseKey((k) => k + 1);
+    setEcoPulse(true);
+    if (ecoPulseTimerRef.current) window.clearTimeout(ecoPulseTimerRef.current);
+    ecoPulseTimerRef.current = window.setTimeout(() => setEcoPulse(false), 950);
+  }
+
   /* ---- load profile + persisted state; seed from profile on first run ---- */
   useEffect(() => {
     async function loadProfile() {
@@ -774,6 +786,19 @@ export default function DashboardPage() {
             setTodaysDbPoints(last === todayStr ? Math.max(0, fromDb) : 0);
             setTotalDbTasks(Number(dbProfile.total_tasks ?? 0));
           }
+
+          // Fetch total points from task_completions table
+          const { data: completions } = await supabase
+            .from('task_completions')
+            .select('points')
+            .eq('user_id', userData.user.id);
+
+          if (completions && completions.length > 0) {
+            const total = completions.reduce((sum, item) => sum + (item.points || 0), 0);
+            setTotalPointsFromDb(total);
+          } else {
+            setTotalPointsFromDb(0);
+          }
         }
 
         // Fallback to localStorage profile if DB profile not found
@@ -788,100 +813,100 @@ export default function DashboardPage() {
         const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
         const eRaw = localStorage.getItem(STORAGE_KEYS.ECO);
         const logRaw = localStorage.getItem(STORAGE_KEYS.LOG);
-  const lastOpenRaw = localStorage.getItem(STORAGE_KEYS.LAST_OPEN);
-      const rhRaw = localStorage.getItem(STORAGE_KEYS.RECENT_HEALTH);
-      const reRaw = localStorage.getItem(STORAGE_KEYS.RECENT_ECO);
-      const hmRaw = localStorage.getItem(STORAGE_KEYS.MODE_HEALTH);
-      const emRaw = localStorage.getItem(STORAGE_KEYS.MODE_ECO);
+        const lastOpenRaw = localStorage.getItem(STORAGE_KEYS.LAST_OPEN);
+        const rhRaw = localStorage.getItem(STORAGE_KEYS.RECENT_HEALTH);
+        const reRaw = localStorage.getItem(STORAGE_KEYS.RECENT_ECO);
+        const hmRaw = localStorage.getItem(STORAGE_KEYS.MODE_HEALTH);
+        const emRaw = localStorage.getItem(STORAGE_KEYS.MODE_ECO);
 
-  // Read awarded points + ids for today (used for rollover and restoring same-day state)
-  const awardedRaw = localStorage.getItem(AWARDED_TODAY_KEY);
-  const awardedIdsRaw = localStorage.getItem(AWARDED_IDS_KEY);
-  let awardedVal = awardedRaw ? parseInt(awardedRaw, 10) || 0 : 0;
-  let awardedIdsVal: string[] = [];
-  try { awardedIdsVal = awardedIdsRaw ? (JSON.parse(awardedIdsRaw) as string[]) : []; } catch { awardedIdsVal = []; }
+        // Read awarded points + ids for today (used for rollover and restoring same-day state)
+        const awardedRaw = localStorage.getItem(AWARDED_TODAY_KEY);
+        const awardedIdsRaw = localStorage.getItem(AWARDED_IDS_KEY);
+        let awardedVal = awardedRaw ? parseInt(awardedRaw, 10) || 0 : 0;
+        let awardedIdsVal: string[] = [];
+        try { awardedIdsVal = awardedIdsRaw ? (JSON.parse(awardedIdsRaw) as string[]) : []; } catch { awardedIdsVal = []; }
 
-      let h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : null;
-      let e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : null;
+        let h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : null;
+        let e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : null;
 
-      const log = logRaw ? (JSON.parse(logRaw) as DailyLog) : {};
-      const rh = rhRaw ? (JSON.parse(rhRaw) as string[]) : [];
-      const re = reRaw ? (JSON.parse(reRaw) as string[]) : [];
+        const log = logRaw ? (JSON.parse(logRaw) as DailyLog) : {};
+        const rh = rhRaw ? (JSON.parse(rhRaw) as string[]) : [];
+        const re = reRaw ? (JSON.parse(reRaw) as string[]) : [];
 
-      let hm: ViewMode = hmRaw === 'focus' ? 'focus' : 'browse';
-      let em: ViewMode = emRaw === 'focus' ? 'focus' : 'browse';
+        let hm: ViewMode = hmRaw === 'focus' ? 'focus' : 'browse';
+        let em: ViewMode = emRaw === 'focus' ? 'focus' : 'browse';
 
-      const todayK = dateKey();
+        const todayK = dateKey();
 
-      // If first run (no stored tasks) but we have profile → seed personalized lists
-      if ((!h || !h.length || !e || !e.length) && p) {
-        const seededHealth = rankAndSelect(ALL_HEALTH, INTEREST_MAP_HEALTH, p.interests || [], p.healthRating || 3);
-        const seededEco = rankAndSelect(ALL_ECO, INTEREST_MAP_ECO, p.interests || [], p.ecoRating || 3);
-        h = attachDetails(seededHealth, HEALTH_DETAILS);
-        e = attachDetails(seededEco, ECO_DETAILS);
+        // If first run (no stored tasks) but we have profile → seed personalized lists
+        if ((!h || !h.length || !e || !e.length) && p) {
+          const seededHealth = rankAndSelect(ALL_HEALTH, INTEREST_MAP_HEALTH, p.interests || [], p.healthRating || 3);
+          const seededEco = rankAndSelect(ALL_ECO, INTEREST_MAP_ECO, p.interests || [], p.ecoRating || 3);
+          h = attachDetails(seededHealth, HEALTH_DETAILS);
+          e = attachDetails(seededEco, ECO_DETAILS);
 
-        // Bias to focus mode if baseline is low (1–2)
-        if ((p.healthRating || 3) <= 2) hm = 'focus';
-        if ((p.ecoRating || 3) <= 2) em = 'focus';
+          // Bias to focus mode if baseline is low (1–2)
+          if ((p.healthRating || 3) <= 2) hm = 'focus';
+          if ((p.ecoRating || 3) <= 2) em = 'focus';
 
-        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(h));
-        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(e));
-        localStorage.setItem(STORAGE_KEYS.MODE_HEALTH, hm);
-        localStorage.setItem(STORAGE_KEYS.MODE_ECO, em);
+          localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(h));
+          localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(e));
+          localStorage.setItem(STORAGE_KEYS.MODE_HEALTH, hm);
+          localStorage.setItem(STORAGE_KEYS.MODE_ECO, em);
 
-        try {
-          window.dispatchEvent(
-            new CustomEvent('notify', {
-              detail: {
-                title: 'Personalized plan ready',
-                description: 'Tasks prioritized from your onboarding survey.',
-                level: 'success',
-                href: '/tasks',
-              },
-            })
-          );
-        } catch {}
-      }
+          try {
+            window.dispatchEvent(
+              new CustomEvent('notify', {
+                detail: {
+                  title: 'Personalized plan ready',
+                  description: 'Tasks prioritized from your onboarding survey.',
+                  level: 'success',
+                  href: '/tasks',
+                },
+              })
+            );
+          } catch {}
+        }
 
-      // If we still don’t have seeded lists, fall back to defaults
-      const healthFinal = h ?? defaultHealth;
-      const ecoFinal = e ?? defaultEco;
+        // If we still don’t have seeded lists, fall back to defaults
+        const healthFinal = h ?? defaultHealth;
+        const ecoFinal = e ?? defaultEco;
 
-      if (lastOpenRaw && lastOpenRaw !== todayK) {
-        // Create rollover snapshot for the previous day using awarded points
-        const rolloverEntry = buildEntry(healthFinal, ecoFinal, awardedVal, lastOpenRaw, { section: 'rollover' });
-        saveEntryToStorage(rolloverEntry);
+        if (lastOpenRaw && lastOpenRaw !== todayK) {
+          // Create rollover snapshot for the previous day using awarded points
+          const rolloverEntry = buildEntry(healthFinal, ecoFinal, awardedVal, lastOpenRaw, { section: 'rollover' });
+          saveEntryToStorage(rolloverEntry);
 
-        const reset = (tasks: Task[]) => tasks.map((t) => ({ ...t, completed: false }));
-        setHealthTasks(reset(healthFinal));
-        setEcoTasks(reset(ecoFinal));
-        setHealthIndex(0);
-        setEcoIndex(0);
-        setRecentHealth([]);
-        setRecentEco([]);
-        setAwardedToday(0);
-        setAwardedIds([]);
-        localStorage.setItem(AWARDED_TODAY_KEY, '0');
-        localStorage.setItem(AWARDED_IDS_KEY, '[]');
-        awardedTodayRef.current = 0;
-        awardedIdsRef.current = [];
-        setTodaysDbPoints(0);
-      } else {
-        setHealthTasks(healthFinal);
-        setEcoTasks(ecoFinal);
-        setRecentHealth(rh);
-        setRecentEco(re);
-        setAwardedToday(Math.max(0, awardedVal));
-        setAwardedIds(Array.isArray(awardedIdsVal) ? awardedIdsVal : []);
-        awardedTodayRef.current = Math.max(0, awardedVal);
-        awardedIdsRef.current = Array.isArray(awardedIdsVal) ? awardedIdsVal : [];
-      }
+          const reset = (tasks: Task[]) => tasks.map((t) => ({ ...t, completed: false }));
+          setHealthTasks(reset(healthFinal));
+          setEcoTasks(reset(ecoFinal));
+          setHealthIndex(0);
+          setEcoIndex(0);
+          setRecentHealth([]);
+          setRecentEco([]);
+          setAwardedToday(0);
+          setAwardedIds([]);
+          localStorage.setItem(AWARDED_TODAY_KEY, '0');
+          localStorage.setItem(AWARDED_IDS_KEY, '[]');
+          awardedTodayRef.current = 0;
+          awardedIdsRef.current = [];
+          setTodaysDbPoints(0);
+        } else {
+          setHealthTasks(healthFinal);
+          setEcoTasks(ecoFinal);
+          setRecentHealth(rh);
+          setRecentEco(re);
+          setAwardedToday(Math.max(0, awardedVal));
+          setAwardedIds(Array.isArray(awardedIdsVal) ? awardedIdsVal : []);
+          awardedTodayRef.current = Math.max(0, awardedVal);
+          awardedIdsRef.current = Array.isArray(awardedIdsVal) ? awardedIdsVal : [];
+        }
 
-      setHealthMode(hm);
-      setEcoMode(em);
+        setHealthMode(hm);
+        setEcoMode(em);
 
-      setDailyLog(pruneLog(log));
-      localStorage.setItem(STORAGE_KEYS.LAST_OPEN, todayK);
+        setDailyLog(pruneLog(log));
+        localStorage.setItem(STORAGE_KEYS.LAST_OPEN, todayK);
       } catch (err) {
         console.error('Profile load error:', err);
         setProfile(null);
@@ -1128,16 +1153,101 @@ export default function DashboardPage() {
   }
 
   /* ---- navigation + toggle ---- */
+  // Helper: Refetch today's points from database to update UI
+  async function refetchTodaysPoints() {
+    try {
+      if (!userId) return;
+      const { data: row } = await supabase
+        .from('profiles')
+        .select('todays_points, month_points, total_points, total_tasks')
+        .eq('id', userId)
+        .maybeSingle();
+      
+      if (row) {
+        const todayStr = dateKey();
+        const last = (row as any).last_activity_date as string | null;
+        const sameDay = last === todayStr;
+        
+        setTodaysDbPoints(sameDay ? Math.max(0, Number(row.todays_points ?? 0)) : 0);
+        setTotalPointsFromDb(Math.max(0, Number(row.total_points ?? 0)));
+        setTotalDbTasks(Math.max(0, Number(row.total_tasks ?? 0)));
+        console.log('✓ Refetched points from database:', {
+          todays: row.todays_points,
+          total: row.total_points,
+          tasks: row.total_tasks
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to refetch points:', e);
+    }
+  }
+
+  // Helper: Refetch total points from task_completions
+  async function refetchTotalPoints() {
+    try {
+      if (!userId) return;
+      const { data: completions } = await supabase
+        .from('task_completions')
+        .select('points')
+        .eq('user_id', userId);
+
+      if (completions && completions.length > 0) {
+        const total = completions.reduce((sum, item) => sum + (item.points || 0), 0);
+        setTotalPointsFromDb(total);
+      } else {
+        setTotalPointsFromDb(0);
+      }
+    } catch (e) {
+      console.warn('refetchTotalPoints failed', e);
+    }
+  }
+
   // Helper: Apply a points delta (can be negative for undo) and optional task count delta (+1 on first complete, -1 on undo)
   async function applyPointsDelta(delta: number, taskDelta: number = 0) {
+    setIsSavingPoints(true);
     try {
-      if (!userId || delta === 0 && taskDelta === 0) return;
+      if (!userId) {
+        console.warn('Cannot apply points delta: user not logged in');
+        setIsSavingPoints(false);
+        return;
+      }
+      if (delta === 0 && taskDelta === 0) {
+        setIsSavingPoints(false);
+        return;
+      }
+      
       const { data: row, error } = await supabase
         .from('profiles')
         .select('todays_points, month_points, total_points, last_activity_date, total_tasks')
         .eq('id', userId)
         .maybeSingle();
-      if (error) return;
+      
+      if (error) {
+        console.error('Error fetching profile for points update:', error);
+        return;
+      }
+      
+      // If no profile exists, create one
+      if (!row) {
+        console.log('No profile found, creating initial profile...');
+        const { error: insertError } = await supabase
+          .from('profiles')
+          .insert({
+            id: userId,
+            todays_points: Math.max(0, delta),
+            month_points: Math.max(0, delta),
+            total_points: Math.max(0, delta),
+            total_tasks: Math.max(0, taskDelta),
+            last_activity_date: dateKey(),
+          });
+        
+        if (insertError) {
+          console.error('Error creating profile:', insertError);
+        } else {
+          console.log('✓ Profile created and points awarded');
+        }
+        return;
+      }
       const todayStr = dateKey();
       const last = (row?.last_activity_date as string | null) || null;
       const sameDay = last === todayStr;
@@ -1157,7 +1267,19 @@ export default function DashboardPage() {
       const nextTotal = Math.max(0, currentTotal + delta);
       const nextTasks = Math.max(0, currentTasks + taskDelta);
 
-      await supabase
+      console.log('Updating points:', { 
+        userId, 
+        delta, 
+        taskDelta,
+        currentToday, 
+        nextToday, 
+        currentMonth, 
+        nextMonth,
+        currentTotal,
+        nextTotal 
+      });
+
+      const { error: updateError } = await supabase
         .from('profiles')
         .update({
           todays_points: nextToday,
@@ -1167,8 +1289,16 @@ export default function DashboardPage() {
           last_activity_date: todayStr,
         })
         .eq('id', userId);
+      
+      if (updateError) {
+        console.error('Error updating profile points:', updateError);
+      } else {
+        console.log('✓ Points updated successfully');
+      }
     } catch (e) {
-      console.warn('applyPointsDelta failed', e);
+      console.error('applyPointsDelta failed:', e);
+    } finally {
+      setIsSavingPoints(false);
     }
   }
 
@@ -1192,167 +1322,111 @@ export default function DashboardPage() {
     else setEcoIndex(indexById(ecoTasks, id));
   }
 
-  // >>> SOUND + CONFETTI + SNAPSHOT + NOTIFY + SEPARATE COMPLETE/UNDO
-  function handleComplete(section: 'health' | 'eco') {
+  // >>> SOUND + CONFETTI + SNAPSHOT + NOTIFY (only when flipping to completed)
+  function handleToggleAndAutoAdvance(section: 'health' | 'eco') {
     if (section === 'health') {
       setHealthTasks((prev) => {
         if (!prev.length) return prev;
         const idx = healthIndexRef.current;
         const current = prev[idx];
-        if (!current || current.completed) return prev; // Already completed
-        
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: true } : t));
-        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
-        playClickIfEnabled();
-        celebrateIfEnabled();
-        setRecentHealth((old) => pushRecent(old, current.id));
+        if (!current) return prev;
+        const wasCompleted = current.completed;
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
 
-        window.dispatchEvent(
-          new CustomEvent('notify', {
-            detail: {
-              title: 'Health task completed',
-              description: `${current.label}  +${current.points} pts`,
-              level: 'success',
-              href: '/tasks?section=health',
-            },
-          })
-        );
-
-        // Award points only the first time
-        if (!awardedIdsRef.current.includes(current.id)) {
-          const nextAwarded = awardedTodayRef.current + current.points;
-          setAwardedToday(nextAwarded);
-          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
-          setAwardedIds(nextIds);
-          try {
-            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-          } catch {}
-          void applyPointsDelta(current.points, 1);
-          setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
-          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
-
-          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
-            const hit = Math.floor(nextAwarded / 100) * 100;
-            try {
-              window.dispatchEvent(
-                new CustomEvent('notify', {
-                  detail: {
-                    title: 'Points milestone reached',
-                    description: `Nice! You hit ${hit} pts today.`,
-                    level: 'success',
-                    href: '/dashboard',
-                  },
-                })
-              );
-            } catch {}
-          }
-        }
-
-        const entry = buildEntry(
-          updated,
-          ecoTasksRef.current,
-          awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
-          undefined,
-          { section: 'health', taskId: current.id, completed: true }
-        );
-        saveEntryToStorage(entry);
-        setHealthIndex(() => findNextIncompleteIndex(updated, idx));
-        return updated;
-      });
-    } else {
-      setEcoTasks((prev) => {
-        if (!prev.length) return prev;
-        const idx = ecoIndexRef.current;
-        const current = prev[idx];
-        if (!current || current.completed) return prev;
-        
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: true } : t));
-        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
-        playClickIfEnabled();
-        celebrateIfEnabled();
-        setRecentEco((old) => pushRecent(old, current.id));
-
-        window.dispatchEvent(
-          new CustomEvent('notify', {
-            detail: {
-              title: 'Eco task completed',
-              description: `${current.label}  +${current.points} pts`,
-              level: 'success',
-              href: '/tasks?section=eco',
-            },
-          })
-        );
-
-        if (!awardedIdsRef.current.includes(current.id)) {
-          const nextAwarded = awardedTodayRef.current + current.points;
-          setAwardedToday(nextAwarded);
-          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
-          setAwardedIds(nextIds);
-          try {
-            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-          } catch {}
-          void applyPointsDelta(current.points, 1);
-          setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
-          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
-
-          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
-            const hit = Math.floor(nextAwarded / 100) * 100;
-            try {
-              window.dispatchEvent(
-                new CustomEvent('notify', {
-                  detail: {
-                    title: 'Points milestone reached',
-                    description: `Nice! You hit ${hit} pts today.`,
-                    level: 'success',
-                    href: '/dashboard',
-                  },
-                })
-              );
-            } catch {}
-          }
-        }
-
-        const entry = buildEntry(
-          healthTasksRef.current,
-          updated,
-          awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
-          undefined,
-          { section: 'eco', taskId: current.id, completed: true }
-        );
-        saveEntryToStorage(entry);
-        setEcoIndex(() => findNextIncompleteIndex(updated, idx));
-        return updated;
-      });
-    }
-  }
-
-  function handleUndo(section: 'health' | 'eco') {
-    if (section === 'health') {
-      setHealthTasks((prev) => {
-        if (!prev.length) return prev;
-        const idx = healthIndexRef.current;
-        const current = prev[idx];
-        if (!current || !current.completed) return prev; // Not completed yet
-        
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: false } : t));
         localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
         playClickIfEnabled();
 
-        // Reverse points if they were awarded
-        if (awardedIdsRef.current.includes(current.id)) {
-          const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
-          setAwardedToday(nextAwarded);
-          const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
-          setAwardedIds(nextIds);
-          try {
-            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-          } catch {}
-          void applyPointsDelta(-current.points, -1);
-          setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
-          setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
+        if (!wasCompleted) {
+          // === Trigger the pink pulse behind the Health card ===
+          triggerHealthPulse();
+
+          celebrateIfEnabled();
+          setRecentHealth((old) => pushRecent(old, current.id));
+
+          window.dispatchEvent(
+            new CustomEvent('notify', {
+              detail: {
+                title: 'Health task completed',
+                description: `${current.label}  +${current.points} pts`,
+                level: 'success',
+                href: '/tasks?section=health',
+              },
+            })
+          );
+
+          // Award points only the first time this task is completed today
+          if (!awardedIdsRef.current.includes(current.id)) {
+            const nextAwarded = awardedTodayRef.current + current.points;
+            setAwardedToday(nextAwarded);
+            const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+            setAwardedIds(nextIds);
+            try {
+              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+            } catch {}
+            // Insert into task_completions table
+            if (userId) {
+              void supabase.from('task_completions').insert({
+                user_id: userId,
+                task_id: current.id,
+                points: current.points,
+              });
+              // Refetch total points from task_completions
+              void refetchTotalPoints();
+            }
+            // Push to Supabase and reflect locally
+            // Update DB and immediately update local state
+            applyPointsDelta(current.points, 1).then(() => {
+              // Force refresh the points display by fetching latest from DB
+              refetchTodaysPoints();
+            });
+            setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+
+            // Milestone notification based on awarded points
+            if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+              const hit = Math.floor(nextAwarded / 100) * 100;
+              try {
+                window.dispatchEvent(
+                  new CustomEvent('notify', {
+                    detail: {
+                      title: 'Points milestone reached',
+                      description: `Nice! You hit ${hit} pts today.`,
+                      level: 'success',
+                      href: '/dashboard',
+                    },
+                  })
+                );
+              } catch {}
+            }
+          }
+
+          const entry = buildEntry(
+            updated,
+            ecoTasksRef.current,
+            awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
+            undefined,
+            { section: 'health', taskId: current.id, completed: true }
+          );
+          saveEntryToStorage(entry);
+          setHealthIndex(() => findNextIncompleteIndex(updated, idx));
+        } else {
+          // Undo path: reverse points if they were awarded
+          if (awardedIdsRef.current.includes(current.id)) {
+            const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
+            setAwardedToday(nextAwarded);
+            const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
+            setAwardedIds(nextIds);
+            try {
+              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+            } catch {}
+            applyPointsDelta(-current.points, -1).then(() => {
+              refetchTodaysPoints();
+            });
+            setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
+          }
         }
         return updated;
       });
@@ -1361,24 +1435,98 @@ export default function DashboardPage() {
         if (!prev.length) return prev;
         const idx = ecoIndexRef.current;
         const current = prev[idx];
-        if (!current || !current.completed) return prev;
-        
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: false } : t));
+        if (!current) return prev;
+        const wasCompleted = current.completed;
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
+
         localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
         playClickIfEnabled();
 
-        if (awardedIdsRef.current.includes(current.id)) {
-          const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
-          setAwardedToday(nextAwarded);
-          const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
-          setAwardedIds(nextIds);
-          try {
-            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
-            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
-          } catch {}
-          void applyPointsDelta(-current.points, -1);
-          setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
-          setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
+        if (!wasCompleted) {
+          // === Trigger the green pulse behind the Eco card ===
+          triggerEcoPulse();
+
+          celebrateIfEnabled();
+          setRecentEco((old) => pushRecent(old, current.id));
+
+          window.dispatchEvent(
+            new CustomEvent('notify', {
+              detail: {
+                title: 'Eco task completed',
+                description: `${current.label}  +${current.points} pts`,
+                level: 'success',
+                href: '/tasks?section=eco',
+              },
+            })
+          );
+
+          if (!awardedIdsRef.current.includes(current.id)) {
+            const nextAwarded = awardedTodayRef.current + current.points;
+            setAwardedToday(nextAwarded);
+            const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+            setAwardedIds(nextIds);
+            try {
+              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+            } catch {}
+            // Insert into task_completions table
+            if (userId) {
+              void supabase.from('task_completions').insert({
+                user_id: userId,
+                task_id: current.id,
+                points: current.points,
+              });
+              // Refetch total points from task_completions
+              void refetchTotalPoints();
+            }
+            applyPointsDelta(current.points, 1).then(() => {
+              refetchTodaysPoints();
+            });
+            setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+
+            if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+              const hit = Math.floor(nextAwarded / 100) * 100;
+              try {
+                window.dispatchEvent(
+                  new CustomEvent('notify', {
+                    detail: {
+                      title: 'Points milestone reached',
+                      description: `Nice! You hit ${hit} pts today.`,
+                      level: 'success',
+                      href: '/dashboard',
+                    },
+                  })
+                );
+              } catch {}
+            }
+          }
+
+          const entry = buildEntry(
+            healthTasksRef.current,
+            updated,
+            awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
+            undefined,
+            { section: 'eco', taskId: current.id, completed: true }
+          );
+          saveEntryToStorage(entry);
+          setEcoIndex(() => findNextIncompleteIndex(updated, idx));
+        } else {
+          if (awardedIdsRef.current.includes(current.id)) {
+            const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
+            setAwardedToday(nextAwarded);
+            const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
+            setAwardedIds(nextIds);
+            try {
+              localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+              localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+            } catch {}
+            applyPointsDelta(-current.points, -1).then(() => {
+              refetchTodaysPoints();
+            });
+            setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
+            setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
+          }
         }
         return updated;
       });
@@ -1539,8 +1687,22 @@ export default function DashboardPage() {
             <div className="md:col-span-3 rounded-2xl border border-slate-100 bg-white/90 p-6 shadow-sm h-full flex flex-col">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="mb-1 text-sm text-slate-600">Today's Points</p>
+                  <p className="mb-1 text-sm text-slate-600">
+                    Today's Points
+                    {isSavingPoints && (
+                      <span className="ml-2 inline-flex items-center text-xs text-blue-600">
+                        <svg className="animate-spin h-3 w-3 mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Saving...
+                      </span>
+                    )}
+                  </p>
                   <p className="text-3xl font-bold text-slate-900">{todaysPoints}</p>
+                  {totalPointsFromDb !== null && (
+                    <p className="text-xs text-slate-500 mt-1">Total: {totalPointsFromDb}</p>
+                  )}
                 </div>
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100">
                   <Award className="h-6 w-6 text-green-600" />
@@ -1625,202 +1787,245 @@ export default function DashboardPage() {
             </div>
 
             {/* Health */}
-            <DashboardCard
-              title="Health Tasks"
-              description="Focus on one task at a time or browse freely"
-              icon={Heart}
-              iconColor="text-pink-600"
-              iconBgColor="bg-pink-100"
-            >
-              {/* Mode + Progress + Reset */}
-              <div className="mt-2 flex items-center justify-between">
-                <div className="text-xs text-slate-500">
-                  {healthCompleted}/{healthTasks.length} completed
-                </div>
-                <div className="flex items-center gap-2">
-                  <ModeToggle section="health" mode={healthMode} />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleReset('health')}
-                    aria-label="Reset all Health tasks"
-                    title="Reset all Health tasks"
-                    className="flex items-center gap-1"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    Reset
-                  </Button>
-                </div>
-              </div>
-
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className={`h-full ${accent('health').progress} transition-all`}
-                  style={{ width: `${healthTasks.length ? (healthCompleted / healthTasks.length) * 100 : 0}%` }}
+            <div className="relative">
+              {/* Pulsing ring sits behind the card when triggered */}
+              {healthPulse && (
+                <span
+                  key={healthPulseKey}
+                  className="pointer-events-none absolute -inset-2 rounded-2xl border-2 border-pink-500/70 ew-pulse-ring-pink"
+                  aria-hidden="true"
                 />
-              </div>
-              <RecentChips section="health" recents={recentHealth} tasks={healthTasks} />
+              )}
 
-              {healthTasks.length ? (
-                <>
-                  {/* Current task */}
-                  <div className="mt-4">
-                    <CurrentTaskCard
-                      section="health"
-                      task={healthTasks[healthIndex]}
-                      index={healthIndex}
-                      total={healthTasks.length}
-                      onComplete={() => handleComplete('health')}
-                      onUndo={() => handleUndo('health')}
-                      focusActive={healthMode === 'focus'}
-                    />
+              <DashboardCard
+                title="Health Tasks"
+                description="Focus on one task at a time or browse freely"
+                icon={Heart}
+                iconColor="text-pink-600"
+                iconBgColor="bg-pink-100"
+              >
+                {/* Mode + Progress + Reset */}
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">
+                    {healthCompleted}/{healthTasks.length} completed
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ModeToggle section="health" mode={healthMode} />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleReset('health')}
+                      aria-label="Reset all Health tasks"
+                      title="Reset all Health tasks"
+                      className="flex items-center gap-1"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Reset
+                    </Button>
+                  </div>
+                </div>
 
-                    {/* Carousel Controls */}
-                    <div className="mt-3 flex items-center justify-between">
-                      <Button size="icon" variant="outline" onClick={() => prev('health')} aria-label="Previous health task">
-                        <ChevronLeft className="h-4 w-4" />
-                      </Button>
-                      <div className="flex items-center gap-1">
-                        {healthTasks.map((t, i) => (
-                          <button
-                            key={`h-dot-${t.id}`}
-                            aria-label={`Go to health task ${i + 1}`}
-                            onClick={() => goTo('health', i)}
-                            className={`h-2.5 w-2.5 rounded-full transition
+                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className={`h-full ${accent('health').progress} transition-all`}
+                    style={{ width: `${healthTasks.length ? (healthCompleted / healthTasks.length) * 100 : 0}%` }}
+                  />
+                </div>
+                <RecentChips section="health" recents={recentHealth} tasks={healthTasks} />
+
+                {healthTasks.length ? (
+                  <>
+                    {/* Current task */}
+                    <div className="mt-4">
+                      <CurrentTaskCard
+                        section="health"
+                        task={healthTasks[healthIndex]}
+                        index={healthIndex}
+                        total={healthTasks.length}
+                        onToggle={() => handleToggleAndAutoAdvance('health')}
+                        focusActive={healthMode === 'focus'}
+                      />
+
+                      {/* Carousel Controls */}
+                      <div className="mt-3 flex items-center justify-between">
+                        <Button size="icon" variant="outline" onClick={() => prev('health')} aria-label="Previous health task">
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <div className="flex items-center gap-1">
+                          {healthTasks.map((t, i) => (
+                            <button
+                              key={`h-dot-${t.id}`}
+                              aria-label={`Go to health task ${i + 1}`}
+                              onClick={() => goTo('health', i)}
+                              className={`h-2.5 w-2.5 rounded-full transition
                               ${i === healthIndex
                                 ? accent('health').dotActive
                                 : t.completed
                                 ? accent('health').dotDone
                                 : 'bg-slate-300 hover:bg-slate-400'}`}
-                          />
-                        ))}
+                            />
+                          ))}
+                        </div>
+                        <Button size="icon" variant="outline" onClick={() => next('health')} aria-label="Next health task">
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
                       </div>
-                      <Button size="icon" variant="outline" onClick={() => next('health')} aria-label="Next health task">
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
+
+                      {/* Focus mode details */}
+                      {healthMode === 'focus' && (
+                        <DetailsPanel details={healthTasks[healthIndex]?.details} section="health" />
+                      )}
+
+                      {/* All done helper */}
+                      {healthAllDone && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
+                        </p>
+                      )}
                     </div>
 
-                    {/* Focus mode details */}
-                    {healthMode === 'focus' && (
-                      <DetailsPanel details={healthTasks[healthIndex]?.details} section="health" />
-                    )}
-
-                    {/* All done helper */}
-                    {healthAllDone && (
-                      <p className="mt-2 text-xs text-slate-500">
-                        All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
-                      </p>
-                    )}
-                  </div>
-
-                  <Button className="mt-4 w-full" variant="ghost" asChild>
-                    <Link href="/tasks?section=health">View All Health Tasks</Link>
-                  </Button>
-                </>
-              ) : (
-                <p className="mt-4 text-sm text-slate-500">No health tasks.</p>
-              )}
-            </DashboardCard>
+                    <Button className="mt-4 w-full" variant="ghost" asChild>
+                      <Link href="/tasks?section=health">View All Health Tasks</Link>
+                    </Button>
+                  </>
+                ) : (
+                  <p className="mt-4 text-sm text-slate-500">No health tasks.</p>
+                )}
+              </DashboardCard>
+            </div>
 
             {/* Eco */}
-            <DashboardCard
-              title="Eco Tasks"
-              description="Make a positive environmental impact today"
-              icon={Leaf}
-              iconColor="text-green-600"
-              iconBgColor="bg-green-100"
-            >
-              {/* Mode + Progress + Reset */}
-              <div className="mt-2 flex items-center justify-between">
-                <div className="text-xs text-slate-500">
-                  {ecoCompleted}/{ecoTasks.length} completed
-                </div>
-                <div className="flex items-center gap-2">
-                  <ModeToggle section="eco" mode={ecoMode} />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleReset('eco')}
-                    aria-label="Reset all Eco tasks"
-                    title="Reset all Eco tasks"
-                    className="flex items-center gap-1"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    Reset
-                  </Button>
-                </div>
-              </div>
-
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className={`h-full ${accent('eco').progress} transition-all`}
-                  style={{ width: `${ecoTasks.length ? (ecoCompleted / ecoTasks.length) * 100 : 0}%` }}
+            <div className="relative">
+              {/* Pulsing ring sits behind the card when triggered */}
+              {ecoPulse && (
+                <span
+                  key={ecoPulseKey}
+                  className="pointer-events-none absolute -inset-2 rounded-2xl border-2 border-green-500/70 ew-pulse-ring-green"
+                  aria-hidden="true"
                 />
-              </div>
-              <RecentChips section="eco" recents={recentEco} tasks={ecoTasks} />
+              )}
 
-              {ecoTasks.length ? (
-                <>
-                  {/* Current task */}
-                  <div className="mt-4">
-                    <CurrentTaskCard
-                      section="eco"
-                      task={ecoTasks[ecoIndex]}
-                      index={ecoIndex}
-                      total={ecoTasks.length}
-                      onComplete={() => handleComplete('eco')}
-                      onUndo={() => handleUndo('eco')}
-                      focusActive={ecoMode === 'focus'}
-                    />
+              <DashboardCard
+                title="Eco Tasks"
+                description="Make a positive environmental impact today"
+                icon={Leaf}
+                iconColor="text-green-600"
+                iconBgColor="bg-green-100"
+              >
+                {/* Mode + Progress + Reset */}
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">
+                    {ecoCompleted}/{ecoTasks.length} completed
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ModeToggle section="eco" mode={ecoMode} />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleReset('eco')}
+                      aria-label="Reset all Eco tasks"
+                      title="Reset all Eco tasks"
+                      className="flex items-center gap-1"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Reset
+                    </Button>
+                  </div>
+                </div>
 
-                    {/* Carousel Controls */}
-                    <div className="mt-3 flex items-center justify-between">
-                      <Button size="icon" variant="outline" onClick={() => prev('eco')} aria-label="Previous eco task">
-                        <ChevronLeft className="h-4 w-4" />
-                      </Button>
-                      <div className="flex items-center gap-1">
-                        {ecoTasks.map((t, i) => (
-                          <button
-                            key={`e-dot-${t.id}`}
-                            aria-label={`Go to eco task ${i + 1}`}
-                            onClick={() => goTo('eco', i)}
-                            className={`h-2.5 w-2.5 rounded-full transition
+                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className={`h-full ${accent('eco').progress} transition-all`}
+                    style={{ width: `${ecoTasks.length ? (ecoCompleted / ecoTasks.length) * 100 : 0}%` }}
+                  />
+                </div>
+                <RecentChips section="eco" recents={recentEco} tasks={ecoTasks} />
+
+                {ecoTasks.length ? (
+                  <>
+                    {/* Current task */}
+                    <div className="mt-4">
+                      <CurrentTaskCard
+                        section="eco"
+                        task={ecoTasks[ecoIndex]}
+                        index={ecoIndex}
+                        total={ecoTasks.length}
+                        onToggle={() => handleToggleAndAutoAdvance('eco')}
+                        focusActive={ecoMode === 'focus'}
+                      />
+
+                      {/* Carousel Controls */}
+                      <div className="mt-3 flex items-center justify-between">
+                        <Button size="icon" variant="outline" onClick={() => prev('eco')} aria-label="Previous eco task">
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <div className="flex items-center gap-1">
+                          {ecoTasks.map((t, i) => (
+                            <button
+                              key={`e-dot-${t.id}`}
+                              aria-label={`Go to eco task ${i + 1}`}
+                              onClick={() => goTo('eco', i)}
+                              className={`h-2.5 w-2.5 rounded-full transition
                               ${i === ecoIndex
                                 ? accent('eco').dotActive
                                 : t.completed
                                 ? accent('eco').dotDone
                                 : 'bg-slate-300 hover:bg-slate-400'}`}
-                          />
-                        ))}
+                            />
+                          ))}
+                        </div>
+                        <Button size="icon" variant="outline" onClick={() => next('eco')} aria-label="Next eco task">
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
                       </div>
-                      <Button size="icon" variant="outline" onClick={() => next('eco')} aria-label="Next eco task">
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
+
+                      {/* Focus mode details */}
+                      {ecoMode === 'focus' && (
+                        <DetailsPanel details={ecoTasks[ecoIndex]?.details} section="eco" />
+                      )}
+
+                      {ecoAllDone && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
+                        </p>
+                      )}
                     </div>
 
-                    {/* Focus mode details */}
-                    {ecoMode === 'focus' && (
-                      <DetailsPanel details={ecoTasks[ecoIndex]?.details} section="eco" />
-                    )}
-
-                    {ecoAllDone && (
-                      <p className="mt-2 text-xs text-slate-500">
-                        All tasks complete. Use <span className="font-medium">Browse</span> to review or edit.
-                      </p>
-                    )}
-                  </div>
-
-                  <Button className="mt-4 w-full" variant="ghost" asChild>
-                    <Link href="/tasks?section=eco">View All Eco Tasks</Link>
-                  </Button>
-                </>
-              ) : (
-                <p className="mt-4 text-sm text-slate-500">No eco tasks.</p>
-              )}
-            </DashboardCard>
+                    <Button className="mt-4 w-full" variant="ghost" asChild>
+                      <Link href="/tasks?section=eco">View All Eco Tasks</Link>
+                    </Button>
+                  </>
+                ) : (
+                  <p className="mt-4 text-sm text-slate-500">No eco tasks.</p>
+                )}
+              </DashboardCard>
+            </div>
           </div>
         </main>
       </div>
+
+      {/* Global CSS for the pulsing rings behind the cards */}
+      <style jsx global>{`
+        @keyframes ewPulseRingPink {
+          0% { opacity: 0.9; transform: scale(1); }
+          60% { opacity: 0.35; transform: scale(1.04); }
+          100% { opacity: 0; transform: scale(1.07); }
+        }
+        .ew-pulse-ring-pink {
+          animation: ewPulseRingPink 0.9s cubic-bezier(0.4, 0, 0.2, 1) both;
+          box-shadow: 0 0 0 0 rgba(244, 114, 182, 0.35); /* pink-400 */
+        }
+
+        @keyframes ewPulseRingGreen {
+          0% { opacity: 0.9; transform: scale(1); }
+          60% { opacity: 0.35; transform: scale(1.04); }
+          100% { opacity: 0; transform: scale(1.07); }
+        }
+        .ew-pulse-ring-green {
+          animation: ewPulseRingGreen 0.9s cubic-bezier(0.4, 0, 0.2, 1) both;
+          box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.35); /* green-500 */
+        }
+      `}</style>
     </div>
   );
 }

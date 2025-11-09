@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { supabase } from '@/lib/supabase';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import { Button } from '@/components/ui/button';
@@ -140,11 +141,47 @@ export default function SettingsPage() {
   }
 
   /** Save Profile */
-  function handleSaveProfile() {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-    setProfileSavedAt(Date.now());
-    setMessage('Profile saved.');
-    setTimeout(() => setMessage(null), 1800);
+  async function handleSaveProfile() {
+    // Persist to Supabase for authenticated users; fallback to localStorage
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (user) {
+        // upsert profile row keyed by auth user id
+        const payload = {
+          id: user.id,
+          full_name: profile.name || null,
+          email: profile.email || null,
+          location: profile.location || null,
+          bio: profile.bio || null,
+          hobbies: Array.isArray(profile.hobbies) ? profile.hobbies : [],
+          updated_at: new Date().toISOString(),
+        } as any;
+
+        const { error } = await supabase.from('profiles').upsert(payload);
+        if (error) throw error;
+
+        setMessage('Profile saved to your account.');
+        setProfileSavedAt(Date.now());
+        // also persist a copy locally for offline UX
+        try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch {}
+        setTimeout(() => setMessage(null), 1800);
+        return;
+      }
+    } catch (e) {
+      // ignore and fallback to localStorage
+      console.warn('Supabase profile save failed, falling back to localStorage', e);
+    }
+
+    try {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+      setProfileSavedAt(Date.now());
+      setMessage('Profile saved locally.');
+      setTimeout(() => setMessage(null), 1800);
+    } catch (err) {
+      setMessage('Failed to save profile.');
+      setTimeout(() => setMessage(null), 1800);
+    }
   }
 
   /** Save Prefs */
