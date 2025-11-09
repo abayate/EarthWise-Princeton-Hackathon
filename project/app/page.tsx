@@ -15,7 +15,8 @@ import {
   User,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
+import type { Variants } from 'framer-motion';
+
 /* ---------------- Typewriter (no cursor) — used ONLY for the title ---------------- */
 function useTypewriter(
   text: string,
@@ -102,26 +103,26 @@ function BadgeRotator({
 }
 
 /* ---------------- Feature fade-in variants ---------------- */
-const featuresContainer = {
+const featuresContainer: Variants = {
   hidden: { opacity: 0, y: 12 },
   show: {
     opacity: 1,
     y: 0,
     transition: {
       duration: 0.55,
-      ease: 'easeOut',
+      ease: 'easeOut', // acceptable easing string
       when: 'beforeChildren',
       staggerChildren: 0.14,
     },
   },
 };
 
-const featureItem = {
-  hidden: { opacity: 0, y: 18, filter: 'blur(4px)' as any },
+const featureItem: Variants = {
+  hidden: { opacity: 0, y: 18, filter: 'blur(4px)' },
   show: {
     opacity: 1,
     y: 0,
-    filter: 'blur(0px)' as any,
+    filter: 'blur(0px)',
     transition: { duration: 0.5, ease: 'easeOut' },
   },
 };

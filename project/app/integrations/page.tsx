@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
+import { KnotLogo } from '@/components/KnotLogo';
 import {
   Leaf,
   PenTool,
@@ -19,6 +20,7 @@ import {
   HelpCircle,
   KeyRound,
   PlugZap,
+  Receipt,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -76,7 +78,32 @@ function StatusBadge({
   );
 }
 
+interface KnotTransaction {
+  merchant: string;
+  sku: string;
+  amount: number;
+  category: string;
+}
+
 export default function IntegrationsPage() {
+  // --- Knot integration state ---
+  const [knotTransactions, setKnotTransactions] = useState<KnotTransaction[]>([]);
+  const [knotLoading, setKnotLoading] = useState(true);
+
+  // Fetch Knot transactions on mount
+  useEffect(() => {
+    fetch('/api/knot/mock')
+      .then(res => res.json())
+      .then(data => {
+        setKnotTransactions(data.transactions);
+        setKnotLoading(false);
+      })
+      .catch(err => {
+        console.error('Error fetching Knot data:', err);
+        setKnotLoading(false);
+      });
+  }, []);
+
   // --- Detect client-visible env (safe) ---
   const supabaseConfigured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -384,6 +411,41 @@ export default function IntegrationsPage() {
               rationale="One-click deploy if you go the Bubble route; pair with MLH .tech domain."
               status={<StatusBadge state="optional" />}
               tools={['Bubble', '.tech domain']}
+            />
+          </div>
+        </motion.section>
+
+        {/* 8) Knot Integration */}
+        <motion.section {...section(8)} className="mt-10">
+          <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+            <Receipt className="h-5 w-5 text-emerald-600" />
+            SKU-Level Data
+          </h2>
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Card
+              icon={<KnotLogo className="text-emerald-600" />}
+              title="Knot API Integration"
+              rationale="SKU-level data → turned into tasks"
+              status={<StatusBadge state="connected" title="Mock Data Active" />}
+              tools={['Transaction Data', 'SKU Analysis']}
+              extra={
+                <div className="space-y-3 mt-4">
+                  <p className="text-sm font-medium text-slate-700">Recent Sustainable Purchases:</p>
+                  {knotLoading ? (
+                    <p className="text-sm text-slate-600">Loading transactions...</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {knotTransactions.map((tx, i) => (
+                        <div key={i} className="bg-slate-50 p-3 rounded-lg">
+                          <div className="text-sm font-medium text-slate-800">{tx.merchant}</div>
+                          <div className="text-xs text-slate-600">SKU: {tx.sku}</div>
+                          <div className="text-xs text-emerald-600">${tx.amount.toFixed(2)} - {tx.category}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              }
             />
           </div>
         </motion.section>

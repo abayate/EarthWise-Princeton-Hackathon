@@ -12,6 +12,7 @@ import {
   Trophy,
   Heart,
   TreePine,
+  LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
@@ -40,7 +41,12 @@ type DBProfileRow = {
   full_name?: string | null;
   email?: string | null;
   hobbies?: string[] | null;
-  avatar_id?: string | null;
+  profile_icon?: string | null;
+  total_points?: number | null;
+  month_points?: number | null;
+  overall_contentment?: number | null;
+  eco_friendly_score?: number | null;
+  bio?: string | null; // newly surfaced in UI
 };
 
 type LBRow = { id: number; name: string; score: number };
@@ -107,30 +113,31 @@ function loadProfileFromLocal(): Profile {
 export default function Sidebar() {
   const pathname = usePathname();
 
+  // Prevent hydration errors - only render after mount
+  const [mounted, setMounted] = useState(false);
+
   // Profile & avatar
-  const [profile, setProfile] = useState<Profile>(() => loadProfileFromLocal());
-  const [avatarId, setAvatarId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(AVATAR_KEY);
-    } catch {
-      return null;
-    }
-  });
+  const [profile, setProfile] = useState<Profile>({ name: 'You', email: '', hobbies: [] });
+  const [avatarId, setAvatarId] = useState<string | null>(null);
 
   // Points & rank
   const [monthlyPoints, setMonthlyPoints] = useState<number>(0);
   const [totalPoints, setTotalPoints] = useState<number>(0);
   const [rankIndex, setRankIndex] = useState<number | null>(null);
+  const [overallContentment, setOverallContentment] = useState<number>(0);
+  const [ecoFriendly, setEcoFriendly] = useState<number>(0);
+
+  /** ---------- Load from database on mount ---------- */
+  useEffect(() => {
+    setMounted(true);
+    loadFromDatabase();
+  }, []);
 
   /** ---------- Live sync: local -> UI (same tab) & DB -> UI ---------- */
   useEffect(() => {
-    ensureLifetimeBaseline();
-    
-    // Load from database first
-    loadFromDatabase();
+    if (!mounted) return;
 
-    // Then set up listeners for updates
-    refreshStats();
+    ensureLifetimeBaseline();
 
     // 1) Local (instant) changes: listen for our custom "profileUpdate" event
     const onProfileUpdate = (e: Event) => {
@@ -146,30 +153,20 @@ export default function Sidebar() {
         }));
         if (typeof det.avatarId === 'string') setAvatarId(det.avatarId);
       } else {
-        setProfile(loadProfileFromLocal());
-        try {
-          const a = localStorage.getItem(AVATAR_KEY);
-          if (a !== null) setAvatarId(a);
-        } catch {}
+        // On generic profileUpdate with no payload, refresh from DB
+        refreshFromDB();
       }
     };
 
     // 2) Cross-tab changes: storage events
     const onStorage = (e: StorageEvent) => {
-      if (e.key === PROFILE_KEY) setProfile(loadProfileFromLocal());
-      if (e.key === AVATAR_KEY) setAvatarId(localStorage.getItem(AVATAR_KEY));
-      if ([MONTHLY_POINTS_KEY, TOTAL_POINTS_KEY, LB_DATA_KEY, LB_POINTS_KEY].includes(e.key ?? '')) {
+      if ([LB_DATA_KEY].includes(e.key ?? '')) {
         refreshStats();
       }
     };
 
     // 3) When returning to the tab, re-pull from DB in case another device updated
     const onFocus = () => {
-      setProfile(loadProfileFromLocal());
-      try {
-        const a = localStorage.getItem(AVATAR_KEY);
-        if (a !== null) setAvatarId(a);
-      } catch {}
       refreshFromDB(); // light DB refresh
       refreshStats();
     };
@@ -187,7 +184,7 @@ export default function Sidebar() {
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [mounted]);
 
   async function loadFromDatabase() {
     try {
@@ -197,9 +194,9 @@ export default function Sidebar() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('full_name, email, hobbies, profile_icon, total_points, month_points')
+        .select('full_name, email, hobbies, profile_icon, total_points, month_points, overall_contentment, eco_friendly_score, bio')
         .eq('id', uid)
-        .single();
+        .single<DBProfileRow>();
 
       if (error || !data) return;
 
@@ -209,7 +206,7 @@ export default function Sidebar() {
         email: data.email || '',
         hobbies: Array.isArray(data.hobbies) ? data.hobbies : [],
         location: '',
-        bio: '',
+        bio: data.bio || '',
       });
 
       // Update avatar
@@ -218,8 +215,12 @@ export default function Sidebar() {
       }
 
       // Update points from database
-      setTotalPoints(data.total_points || 0);
-      setMonthlyPoints(data.month_points || 0);
+      setTotalPoints(Number(data.total_points ?? 0));
+      setMonthlyPoints(Number(data.month_points ?? 0));
+
+      // Update metrics from DB (clamped 0-100)
+      setOverallContentment(Math.max(0, Math.min(100, Number(data.overall_contentment ?? 0))));
+      setEcoFriendly(Math.max(0, Math.min(100, Number(data.eco_friendly_score ?? 0))));
 
       // Calculate rank based on monthly points
       try {
@@ -245,9 +246,9 @@ export default function Sidebar() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('full_name, email, hobbies, avatar_id')
+        .select('full_name, email, hobbies, profile_icon, total_points, month_points, overall_contentment, eco_friendly_score, bio')
         .eq('id', uid)
-        .maybeSingle<DBProfileRow>();
+        .single<DBProfileRow>();
 
       if (error || !data) return;
 
@@ -256,43 +257,36 @@ export default function Sidebar() {
         email: data.email ?? prev.email,
         hobbies: Array.isArray(data.hobbies) ? data.hobbies : prev.hobbies,
         location: prev.location,
-        bio: prev.bio,
+        bio: (data.bio ?? prev.bio) || prev.bio,
       }));
 
-      if (typeof data.avatar_id === 'string' && data.avatar_id.length) {
-        setAvatarId(data.avatar_id);
+      if (data.profile_icon) {
+        setAvatarId(data.profile_icon);
       }
+
+      // Update points from database
+      setTotalPoints(Number(data.total_points ?? 0));
+      setMonthlyPoints(Number(data.month_points ?? 0));
+
+      // Update metrics from DB (clamped 0-100)
+      setOverallContentment(Math.max(0, Math.min(100, Number(data.overall_contentment ?? 0))));
+      setEcoFriendly(Math.max(0, Math.min(100, Number(data.eco_friendly_score ?? 0))));
+
+      // Recalculate rank
+      refreshStats();
     } catch {
       /* ignore */
     }
   }
 
   function refreshStats() {
-    const mRaw = localStorage.getItem(MONTHLY_POINTS_KEY);
-    const tRaw = localStorage.getItem(TOTAL_POINTS_KEY);
+    // Don't use localStorage for points - only for rank calculation
     const lbRaw = localStorage.getItem(LB_DATA_KEY);
-    const meRaw = localStorage.getItem(LB_POINTS_KEY);
-
-    const m = mRaw ? parseInt(mRaw) : 0;
-    let t = tRaw ? parseInt(tRaw) : NaN;
-    if (!Number.isFinite(t)) {
-      const baseline = ensureLifetimeBaseline();
-      t = baseline + (Number.isFinite(m) ? m : 0);
-      try {
-        localStorage.setItem(TOTAL_POINTS_KEY, String(t));
-        // emulate same-tab change for other listeners
-        window.dispatchEvent(new StorageEvent('storage', { key: TOTAL_POINTS_KEY, newValue: String(t) }));
-      } catch {}
-    }
-
-    setMonthlyPoints(Number.isFinite(m) ? m : 0);
-    setTotalPoints(Number.isFinite(t) ? t : 0);
-
+    
     let rank: number | null = null;
     try {
       const board = lbRaw ? (JSON.parse(lbRaw) as LBRow[]) : [];
-      const me = meRaw ? parseInt(meRaw) : 0;
-      const combined = [...board, { id: 0, name: 'You', score: Number.isFinite(me) ? me : 0 }];
+      const combined = [...board, { id: 0, name: 'You', score: monthlyPoints }];
       combined.sort((a, b) => b.score - a.score);
       rank = combined.findIndex(r => r.id === 0);
     } catch {
@@ -308,6 +302,23 @@ export default function Sidebar() {
   const avatarSrc = avatarId ? `/avatars/${avatarId}.png` : null;
 
   const hobbies = (profile.hobbies ?? []).slice(0, 6); // keep it compact
+
+  // Show loading state until mounted to prevent hydration errors
+  if (!mounted) {
+    return (
+      <aside className="w-64 bg-white/40 backdrop-blur-md border-r border-slate-200/30 h-screen sticky top-0 flex flex-col">
+        <div className="p-6 border-b border-slate-200/30">
+          <Link href="/dashboard" className="flex items-center gap-2">
+            <Leaf className="w-8 h-8 text-green-600" />
+            <span className="text-xl font-bold text-slate-900">EarthWise</span>
+          </Link>
+        </div>
+        <div className="p-4">
+          <div className="animate-pulse text-sm text-slate-500">Loading...</div>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="w-64 bg-white/40 backdrop-blur-md border-r border-slate-200/30 h-screen sticky top-0 flex flex-col">
@@ -330,8 +341,11 @@ export default function Sidebar() {
           </Avatar>
           <div className="flex-1">
             <h3 className="font-semibold text-slate-900">{displayName}</h3>
-            <p className="text-sm text-slate-600">Level 1</p>
-            <p className="text-xs text-slate-500 mt-1">Making positive changes</p>
+            <p className="text-xs text-slate-500 mt-1">
+              {profile.bio?.trim()
+                ? (profile.bio.length > 80 ? profile.bio.slice(0, 77) + '…' : profile.bio)
+                : 'Making positive changes'}
+            </p>
           </div>
         </div>
 
@@ -352,7 +366,19 @@ export default function Sidebar() {
             </div>
           </div>
 
-          {/* Metrics (demo) */}
+          {/* Sign Out Button */}
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut();
+              window.location.href = '/login';
+            }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign Out
+          </button>
+
+          {/* Metrics from DB */}
           <div className="space-y-3">
             <div>
               <div className="flex justify-between items-center mb-1">
@@ -360,9 +386,9 @@ export default function Sidebar() {
                   <Heart className="w-3 h-3 text-rose-500" />
                   Overall Contentment
                 </span>
-                <span className="text-xs font-medium text-slate-700">85%</span>
+                <span className="text-xs font-medium text-slate-700">{overallContentment}%</span>
               </div>
-              <Progress value={85} className="h-1.5" />
+              <Progress value={overallContentment} className="h-1.5" />
             </div>
             <div>
               <div className="flex justify-between items-center mb-1">
@@ -370,9 +396,9 @@ export default function Sidebar() {
                   <TreePine className="w-3 h-3 text-green-500" />
                   Eco-friendly
                 </span>
-                <span className="text-xs font-medium text-slate-700">78%</span>
+                <span className="text-xs font-medium text-slate-700">{ecoFriendly}%</span>
               </div>
-              <Progress value={78} className="h-1.5" />
+              <Progress value={ecoFriendly} className="h-1.5" />
             </div>
           </div>
 

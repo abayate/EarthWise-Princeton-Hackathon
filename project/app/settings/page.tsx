@@ -210,11 +210,11 @@ export default function SettingsPage() {
 
   function restoreFromObject(obj: Record<string, unknown>) {
     // Write back known keys only (ignore extras)
-    const allowed = new Set(Object.values(STORAGE_KEYS).concat([PROFILE_KEY, PREFS_KEY]));
+    const allowed = new Set<string>([...Object.values(STORAGE_KEYS), PROFILE_KEY, PREFS_KEY]);
     Object.entries(obj).forEach(([k, v]) => {
-      if (!allowed.has(k)) return;
+      if (!allowed.has(k as string)) return;
       try {
-        localStorage.setItem(k, JSON.stringify(v));
+        localStorage.setItem(k as string, JSON.stringify(v));
       } catch {
         // best-effort
       }
@@ -346,8 +346,8 @@ export default function SettingsPage() {
   // Full reset: wipe all app keys (including profile/prefs)
   function fullReset() {
     if (!confirmAction('This will erase all EarthWise data in this browser. Continue?')) return;
-    const keys = Object.values(STORAGE_KEYS).concat([PROFILE_KEY, PREFS_KEY]);
-    keys.forEach(k => localStorage.removeItem(k));
+    const keys: string[] = [...Object.values(STORAGE_KEYS), PROFILE_KEY, PREFS_KEY];
+    keys.forEach((k: string) => localStorage.removeItem(k));
     window.dispatchEvent(new CustomEvent('taskStateUpdate', { detail: { key: STORAGE_KEYS.HEALTH, value: '[]' } }));
     window.dispatchEvent(new CustomEvent('taskStateUpdate', { detail: { key: STORAGE_KEYS.ECO, value: '[]' } }));
     setProfile({ name: '', email: '', location: '', bio: '', hobbies: [] });
@@ -412,7 +412,7 @@ export default function SettingsPage() {
 
               {/* Profile Picture Selector */}
               <div className="mb-6">
-                <ProfilePictureSelector dark={false} />
+                <ProfilePictureSelector />
               </div>
 
               <div className="grid gap-4">
@@ -423,7 +423,7 @@ export default function SettingsPage() {
                     placeholder="Your name"
                     className="mt-2"
                     value={profile.name}
-                    onChange={e => setProfile(p => ({ ...p, name: e.target.value }))}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProfile(p => ({ ...p, name: e.target.value }))}
                     aria-label="Full name input"
                   />
                 </div>
@@ -435,7 +435,7 @@ export default function SettingsPage() {
                     placeholder="your.email@example.com"
                     className="mt-2"
                     value={profile.email}
-                    onChange={e => setProfile(p => ({ ...p, email: e.target.value }))}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProfile(p => ({ ...p, email: e.target.value }))}
                     aria-label="Email input"
                   />
                 </div>
@@ -446,7 +446,7 @@ export default function SettingsPage() {
                     placeholder="City, Country"
                     className="mt-2"
                     value={profile.location}
-                    onChange={e => setProfile(p => ({ ...p, location: e.target.value }))}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProfile(p => ({ ...p, location: e.target.value }))}
                     aria-label="Location input"
                   />
                 </div>
@@ -524,7 +524,7 @@ export default function SettingsPage() {
                     placeholder="A short personal bio..."
                     className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none"
                     value={profile.bio}
-                    onChange={(e) => setProfile(p => ({ ...p, bio: e.target.value }))}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setProfile(p => ({ ...p, bio: e.target.value }))}
                     aria-label="Bio textarea"
                   />
                 </div>
@@ -563,7 +563,7 @@ export default function SettingsPage() {
                       placeholder="Type a hobby and press Enter…"
                       className=""
                       value={hobbyInput}
-                      onChange={(e) => setHobbyInput(e.target.value)}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setHobbyInput(e.target.value)}
                       onKeyDown={onHobbyKeyDown}
                       // NOTE: no onBlur commit; only saves on Enter
                       aria-label="Add hobby"

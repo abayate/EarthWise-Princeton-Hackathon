@@ -22,7 +22,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { STORAGE_KEYS, celebrateIfEnabled, playClickIfEnabled } from '@/lib/earthwise';
+import { STORAGE_KEYS, celebrateIfEnabled, playClickIfEnabled, pointsToImpact, forecastImpact } from '@/lib/earthwise';
 import { supabase } from '@/lib/supabase';
 
 /* ---------------- Profile key ---------------- */
@@ -30,6 +30,8 @@ const PROFILE_KEY = 'EW_PROFILE_V1';
 
 /* -------- Leaderboard + aggregates keys (UPDATED) -------- */
 const LB_POINTS_KEY = 'EW_TODAYS_POINTS_V1';          // carries MONTHLY points for leaderboard
+const AWARDED_TODAY_KEY = 'EW_TODAYS_AWARDED_V1';     // monotonic awarded points for current day
+const AWARDED_IDS_KEY = 'EW_TODAYS_AWARDED_IDS_V1';   // task ids already awarded today
 const LB_DATA_KEY   = 'EW_LEADERBOARD_DATA_V1';
 const MONTHLY_POINTS_KEY = 'EW_MONTHLY_POINTS_V1';    // number (monthly sum)
 const TOTAL_POINTS_KEY   = 'EW_TOTAL_POINTS_V1';      // number (lifetime sum)
@@ -72,7 +74,7 @@ type DayEntry = {
   date: string; // YYYY-MM-DD
   ts: number;   // epoch ms
   totals: {
-    points: number;              // points for that day (today starts at 0)
+    points: number;              // awarded points captured at snapshot time
     completedCount: number;
     healthCompleted: number;
     ecoCompleted: number;
@@ -353,18 +355,18 @@ const uuid = () =>
 function buildEntry(
   health: Task[],
   eco: Task[],
+  awardedPoints: number,
   dateOverride?: string,
   action?: DayEntry['action']
 ): DayEntry {
   const completedCount = [...health, ...eco].filter((t) => t.completed).length;
-  const points = [...health, ...eco].reduce((s, t) => s + (t.completed ? t.points : 0), BASE_POINTS);
 
   return {
     id: uuid(),
     date: dateOverride ?? dateKey(),
     ts: Date.now(),
     totals: {
-      points,
+      points: Math.max(0, awardedPoints),
       completedCount,
       healthCompleted: health.filter((t) => t.completed).length,
       ecoCompleted: eco.filter((t) => t.completed).length,
@@ -526,14 +528,16 @@ function CurrentTaskCard({
   task,
   index,
   total,
-  onToggle,
+  onComplete,
+  onUndo,
   focusActive,
 }: {
   section: 'health' | 'eco';
   task?: Task;
   index: number;
   total: number;
-  onToggle: () => void;
+  onComplete: () => void;
+  onUndo: () => void;
   focusActive: boolean;
 }) {
   const a = accent(section);
@@ -556,14 +560,27 @@ function CurrentTaskCard({
           Task {index + 1} of {total}
         </p>
       </div>
-      <Button
-        size="sm"
-        variant={task?.completed ? 'default' : 'outline'}
-        onClick={onToggle}
-        aria-label={task?.completed ? 'Undo task' : 'Complete task'}
-      >
-        {task?.completed ? 'Undo' : 'Complete'}
-      </Button>
+      <div className="flex items-center gap-2">
+        {task?.completed ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onUndo}
+            aria-label="Undo task completion"
+          >
+            Undo
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="default"
+            onClick={onComplete}
+            aria-label="Complete task"
+          >
+            Complete
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -624,8 +641,8 @@ function latestPointsByDate(entries: DayEntry[]) {
   return map;
 }
 
-/** Compute monthly & lifetime totals; override today with live today'sPoints and add baseline to lifetime */
-function computeAggregates(todaysPoints: number) {
+/** Compute monthly & lifetime totals; override today with live awarded points and add baseline to lifetime */
+function computeAggregates(todaysAwarded: number) {
   let entries: DayEntry[] = [];
   try {
     const raw = localStorage.getItem(ENTRIES_KEY);
@@ -634,9 +651,9 @@ function computeAggregates(todaysPoints: number) {
 
   const latest = latestPointsByDate(entries);
 
-  // Override today's date with current live total to avoid mid-day stale sums
+  // Override today's date with current live awarded total to avoid mid-day stale sums
   const todayK = dateKey();
-  latest.set(todayK, { points: todaysPoints, ts: Date.now() });
+  latest.set(todayK, { points: Math.max(0, todaysAwarded), ts: Date.now() });
 
   const now = new Date();
   const ymPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -659,6 +676,15 @@ function computeAggregates(todaysPoints: number) {
    =========================== */
 export default function DashboardPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  // Reflect DB-backed today's points for UI
+  const [todaysDbPoints, setTodaysDbPoints] = useState<number | null>(null);
+  // Reflect DB-backed lifetime total tasks
+  const [totalDbTasks, setTotalDbTasks] = useState<number | null>(null);
+
+  // Monotonic awarded points and awarded ids for today
+  const [awardedToday, setAwardedToday] = useState<number>(0);
+  const [awardedIds, setAwardedIds] = useState<string[]>([]);
 
   // Leaderboard static data (others). Live board published by /leaderboard page.
   const [leaderboardData, setLeaderboardData] = useState<LBUser[]>(LB_SEED);
@@ -704,38 +730,11 @@ export default function DashboardPage() {
   const [recentHealth, setRecentHealth] = useState<string[]>([]);
   const [recentEco, setRecentEco] = useState<string[]>([]);
 
-  // Track database points
-  const [dbTodaysPoints, setDbTodaysPoints] = useState<number>(0);
-
-  // Function to update database with new points
-  async function updateDatabasePoints(newTodaysPoints: number) {
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData?.user) return;
-
-    // Calculate the difference to add to total_points
-    const pointsToAdd = newTodaysPoints - dbTodaysPoints;
-
-    // First get current total_points
-    const { data: currentProfile } = await supabase
-      .from('profiles')
-      .select('total_points')
-      .eq('id', userData.user.id)
-      .single();
-
-    if (!currentProfile) return;
-
-    const { error } = await supabase
-      .from('profiles')
-      .update({
-        todays_points: newTodaysPoints,
-        total_points: (currentProfile.total_points || 0) + pointsToAdd,
-      })
-      .eq('id', userData.user.id);
-
-    if (!error) {
-      setDbTodaysPoints(newTodaysPoints);
-    }
-  }
+  // Refs to avoid stale closures when awarding inside state updaters
+  const awardedTodayRef = useRef(0);
+  const awardedIdsRef = useRef<string[]>([]);
+  useEffect(() => { awardedTodayRef.current = awardedToday; }, [awardedToday]);
+  useEffect(() => { awardedIdsRef.current = awardedIds; }, [awardedIds]);
 
   /* ---- load profile + persisted state; seed from profile on first run ---- */
   useEffect(() => {
@@ -749,6 +748,7 @@ export default function DashboardPage() {
         let p: Profile | null = null;
 
         if (userData?.user) {
+          setUserId(userData.user.id);
           const { data: dbProfile } = await supabase
             .from('profiles')
             .select('*')
@@ -767,8 +767,12 @@ export default function DashboardPage() {
               interests: Array.isArray(dbProfile.hobbies) ? dbProfile.hobbies : [],
             };
 
-            // Load today's points from database
-            setDbTodaysPoints(dbProfile.todays_points || 0);
+            // Today's points from DB (reset to 0 if last_activity_date isn't today)
+            const todayStr = dateKey();
+            const fromDb = Number(dbProfile.todays_points ?? 0);
+            const last = dbProfile.last_activity_date as string | null;
+            setTodaysDbPoints(last === todayStr ? Math.max(0, fromDb) : 0);
+            setTotalDbTasks(Number(dbProfile.total_tasks ?? 0));
           }
         }
 
@@ -784,11 +788,18 @@ export default function DashboardPage() {
         const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
         const eRaw = localStorage.getItem(STORAGE_KEYS.ECO);
         const logRaw = localStorage.getItem(STORAGE_KEYS.LOG);
-      const lastOpenRaw = localStorage.getItem(STORAGE_KEYS.LAST_OPEN);
+  const lastOpenRaw = localStorage.getItem(STORAGE_KEYS.LAST_OPEN);
       const rhRaw = localStorage.getItem(STORAGE_KEYS.RECENT_HEALTH);
       const reRaw = localStorage.getItem(STORAGE_KEYS.RECENT_ECO);
       const hmRaw = localStorage.getItem(STORAGE_KEYS.MODE_HEALTH);
       const emRaw = localStorage.getItem(STORAGE_KEYS.MODE_ECO);
+
+  // Read awarded points + ids for today (used for rollover and restoring same-day state)
+  const awardedRaw = localStorage.getItem(AWARDED_TODAY_KEY);
+  const awardedIdsRaw = localStorage.getItem(AWARDED_IDS_KEY);
+  let awardedVal = awardedRaw ? parseInt(awardedRaw, 10) || 0 : 0;
+  let awardedIdsVal: string[] = [];
+  try { awardedIdsVal = awardedIdsRaw ? (JSON.parse(awardedIdsRaw) as string[]) : []; } catch { awardedIdsVal = []; }
 
       let h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : null;
       let e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : null;
@@ -837,7 +848,8 @@ export default function DashboardPage() {
       const ecoFinal = e ?? defaultEco;
 
       if (lastOpenRaw && lastOpenRaw !== todayK) {
-        const rolloverEntry = buildEntry(healthFinal, ecoFinal, lastOpenRaw, { section: 'rollover' });
+        // Create rollover snapshot for the previous day using awarded points
+        const rolloverEntry = buildEntry(healthFinal, ecoFinal, awardedVal, lastOpenRaw, { section: 'rollover' });
         saveEntryToStorage(rolloverEntry);
 
         const reset = (tasks: Task[]) => tasks.map((t) => ({ ...t, completed: false }));
@@ -847,11 +859,22 @@ export default function DashboardPage() {
         setEcoIndex(0);
         setRecentHealth([]);
         setRecentEco([]);
+        setAwardedToday(0);
+        setAwardedIds([]);
+        localStorage.setItem(AWARDED_TODAY_KEY, '0');
+        localStorage.setItem(AWARDED_IDS_KEY, '[]');
+        awardedTodayRef.current = 0;
+        awardedIdsRef.current = [];
+        setTodaysDbPoints(0);
       } else {
         setHealthTasks(healthFinal);
         setEcoTasks(ecoFinal);
         setRecentHealth(rh);
         setRecentEco(re);
+        setAwardedToday(Math.max(0, awardedVal));
+        setAwardedIds(Array.isArray(awardedIdsVal) ? awardedIdsVal : []);
+        awardedTodayRef.current = Math.max(0, awardedVal);
+        awardedIdsRef.current = Array.isArray(awardedIdsVal) ? awardedIdsVal : [];
       }
 
       setHealthMode(hm);
@@ -909,23 +932,39 @@ export default function DashboardPage() {
     [completedCountToday]
   );
 
-  const todaysPoints = useMemo(() => {
-    // Use database value if available, otherwise calculate from tasks
-    if (dbTodaysPoints > 0) return dbTodaysPoints;
+  // Today’s Points come from monotonic awarded tally (undo will not subtract)
+  // Prefer DB-backed value when loaded; fallback to local awarded tally until then
+  const todaysPoints = typeof todaysDbPoints === 'number' ? todaysDbPoints : awardedToday;
+
+  // Get last 7 days' points for forecasting
+  const past7DaysPoints = useMemo(() => {
+    if (typeof window === 'undefined') return [80, 90, 110, 130, 125, 100, 120]; // fallback for SSR
     
-    // TODAY = sum of completed task point values only (starts at 0)
-    return [...healthTasks, ...ecoTasks].reduce(
-      (sum, t) => sum + (t.completed ? t.points : 0),
-      0
-    );
-  }, [healthTasks, ecoTasks, dbTodaysPoints]);
+    // Get entries from local storage
+    const raw = localStorage.getItem(ENTRIES_KEY);
+    if (!raw) return [80, 90, 110, 130, 125, 100, 120]; // fallback if no data
+    
+    try {
+      const entries: DayEntry[] = JSON.parse(raw);
+      // Get last 7 days' points
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      
+      return entries
+        .filter(entry => new Date(entry.date) >= sevenDaysAgo)
+        .map(entry => entry.totals.points)
+        .slice(-7); // take last 7 only
+    } catch (e) {
+      return [80, 90, 110, 130, 125, 100, 120]; // fallback on error
+    }
+  }, []);
 
   /* ===== NEW: compute & publish Monthly/Total + Leaderboard sync ===== */
   const [monthlyPoints, setMonthlyPoints] = useState<number>(0);
   const [totalPoints, setTotalPoints] = useState<number>(0);
 
   useEffect(() => {
-    const { monthlyPoints: m, totalPoints: t } = computeAggregates(todaysPoints);
+    const { monthlyPoints: m, totalPoints: t } = computeAggregates(awardedToday);
     setMonthlyPoints(m);
     setTotalPoints(t);
 
@@ -952,10 +991,11 @@ export default function DashboardPage() {
     [monthlyPoints, leaderboardData]
   );
 
-  const totalTasksDisplay = useMemo(
-    () => BASE_TOTAL_TASKS + completedCountToday,
-    [completedCountToday]
-  );
+  // Total tasks: use DB lifetime total_tasks if loaded, otherwise fall back to simulated baseline + local completions
+  const totalTasksDisplay = useMemo(() => {
+    if (typeof totalDbTasks === 'number') return totalDbTasks;
+    return BASE_TOTAL_TASKS + completedCountToday; // fallback
+  }, [totalDbTasks, completedCountToday]);
 
   const currentStreak = useMemo(() => computeStreak(dailyLog), [dailyLog]);
 
@@ -1088,6 +1128,50 @@ export default function DashboardPage() {
   }
 
   /* ---- navigation + toggle ---- */
+  // Helper: Apply a points delta (can be negative for undo) and optional task count delta (+1 on first complete, -1 on undo)
+  async function applyPointsDelta(delta: number, taskDelta: number = 0) {
+    try {
+      if (!userId || delta === 0 && taskDelta === 0) return;
+      const { data: row, error } = await supabase
+        .from('profiles')
+        .select('todays_points, month_points, total_points, last_activity_date, total_tasks')
+        .eq('id', userId)
+        .maybeSingle();
+      if (error) return;
+      const todayStr = dateKey();
+      const last = (row?.last_activity_date as string | null) || null;
+      const sameDay = last === todayStr;
+      const sameMonth = (() => {
+        if (!last) return true;
+        const [ly, lm] = last.split('-');
+        const [ty, tm] = todayStr.split('-');
+        return ly === ty && lm === tm;
+      })();
+      const currentToday = Math.max(0, Number(row?.todays_points ?? 0));
+      const currentMonth = Math.max(0, Number(row?.month_points ?? 0));
+      const currentTotal = Math.max(0, Number(row?.total_points ?? 0));
+      const currentTasks = Math.max(0, Number(row?.total_tasks ?? 0));
+
+      const nextToday = Math.max(0, (sameDay ? currentToday : 0) + delta);
+      const nextMonth = Math.max(0, (sameMonth ? currentMonth : 0) + delta);
+      const nextTotal = Math.max(0, currentTotal + delta);
+      const nextTasks = Math.max(0, currentTasks + taskDelta);
+
+      await supabase
+        .from('profiles')
+        .update({
+          todays_points: nextToday,
+          month_points: nextMonth,
+          total_points: nextTotal,
+          total_tasks: nextTasks,
+          last_activity_date: todayStr,
+        })
+        .eq('id', userId);
+    } catch (e) {
+      console.warn('applyPointsDelta failed', e);
+    }
+  }
+
   function next(section: 'health' | 'eco') {
     if (section === 'health') setHealthIndex((i) => nextSequentialIndex(healthTasks.length, i, 1));
     else setEcoIndex((i) => nextSequentialIndex(ecoTasks.length, i, 1));
@@ -1108,74 +1192,167 @@ export default function DashboardPage() {
     else setEcoIndex(indexById(ecoTasks, id));
   }
 
-  // >>> SOUND + CONFETTI + SNAPSHOT + NOTIFY (only when flipping to completed)
-  function handleToggleAndAutoAdvance(section: 'health' | 'eco') {
+  // >>> SOUND + CONFETTI + SNAPSHOT + NOTIFY + SEPARATE COMPLETE/UNDO
+  function handleComplete(section: 'health' | 'eco') {
     if (section === 'health') {
       setHealthTasks((prev) => {
         if (!prev.length) return prev;
         const idx = healthIndexRef.current;
         const current = prev[idx];
-        if (!current) return prev;
-        const wasCompleted = current.completed;
+        if (!current || current.completed) return prev; // Already completed
+        
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: true } : t));
+        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
+        playClickIfEnabled();
+        celebrateIfEnabled();
+        setRecentHealth((old) => pushRecent(old, current.id));
 
-        // points before toggling (today starts at 0)
-        const prevPoints =
-          [...prev, ...ecoTasksRef.current].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+        window.dispatchEvent(
+          new CustomEvent('notify', {
+            detail: {
+              title: 'Health task completed',
+              description: `${current.label}  +${current.points} pts`,
+              level: 'success',
+              href: '/tasks?section=health',
+            },
+          })
+        );
 
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
+        // Award points only the first time
+        if (!awardedIdsRef.current.includes(current.id)) {
+          const nextAwarded = awardedTodayRef.current + current.points;
+          setAwardedToday(nextAwarded);
+          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+          setAwardedIds(nextIds);
+          try {
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+          } catch {}
+          void applyPointsDelta(current.points, 1);
+          setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
 
-        // points after toggling
-        const newPoints =
-          [...updated, ...ecoTasksRef.current].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+            const hit = Math.floor(nextAwarded / 100) * 100;
+            try {
+              window.dispatchEvent(
+                new CustomEvent('notify', {
+                  detail: {
+                    title: 'Points milestone reached',
+                    description: `Nice! You hit ${hit} pts today.`,
+                    level: 'success',
+                    href: '/dashboard',
+                  },
+                })
+              );
+            } catch {}
+          }
+        }
 
+        const entry = buildEntry(
+          updated,
+          ecoTasksRef.current,
+          awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
+          undefined,
+          { section: 'health', taskId: current.id, completed: true }
+        );
+        saveEntryToStorage(entry);
+        setHealthIndex(() => findNextIncompleteIndex(updated, idx));
+        return updated;
+      });
+    } else {
+      setEcoTasks((prev) => {
+        if (!prev.length) return prev;
+        const idx = ecoIndexRef.current;
+        const current = prev[idx];
+        if (!current || current.completed) return prev;
+        
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: true } : t));
+        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
+        playClickIfEnabled();
+        celebrateIfEnabled();
+        setRecentEco((old) => pushRecent(old, current.id));
+
+        window.dispatchEvent(
+          new CustomEvent('notify', {
+            detail: {
+              title: 'Eco task completed',
+              description: `${current.label}  +${current.points} pts`,
+              level: 'success',
+              href: '/tasks?section=eco',
+            },
+          })
+        );
+
+        if (!awardedIdsRef.current.includes(current.id)) {
+          const nextAwarded = awardedTodayRef.current + current.points;
+          setAwardedToday(nextAwarded);
+          const nextIds = Array.from(new Set([current.id, ...awardedIdsRef.current]));
+          setAwardedIds(nextIds);
+          try {
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
+          } catch {}
+          void applyPointsDelta(current.points, 1);
+          setTodaysDbPoints((prev) => (prev ?? 0) + current.points);
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+
+          if (Math.floor(nextAwarded / 100) > Math.floor((nextAwarded - current.points) / 100)) {
+            const hit = Math.floor(nextAwarded / 100) * 100;
+            try {
+              window.dispatchEvent(
+                new CustomEvent('notify', {
+                  detail: {
+                    title: 'Points milestone reached',
+                    description: `Nice! You hit ${hit} pts today.`,
+                    level: 'success',
+                    href: '/dashboard',
+                  },
+                })
+              );
+            } catch {}
+          }
+        }
+
+        const entry = buildEntry(
+          healthTasksRef.current,
+          updated,
+          awardedTodayRef.current + (!awardedIdsRef.current.includes(current.id) ? current.points : 0),
+          undefined,
+          { section: 'eco', taskId: current.id, completed: true }
+        );
+        saveEntryToStorage(entry);
+        setEcoIndex(() => findNextIncompleteIndex(updated, idx));
+        return updated;
+      });
+    }
+  }
+
+  function handleUndo(section: 'health' | 'eco') {
+    if (section === 'health') {
+      setHealthTasks((prev) => {
+        if (!prev.length) return prev;
+        const idx = healthIndexRef.current;
+        const current = prev[idx];
+        if (!current || !current.completed) return prev; // Not completed yet
+        
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: false } : t));
         localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
         playClickIfEnabled();
 
-        // Update database with new points
-        if (!wasCompleted && updated[idx].completed) {
-          updateDatabasePoints(newPoints);
-        }
-
-        // Notify when crossing a 100-pt boundary upward
-        if (Math.floor(newPoints / 100) > Math.floor(prevPoints / 100)) {
-          const hit = Math.floor(newPoints / 100) * 100;
+        // Reverse points if they were awarded
+        if (awardedIdsRef.current.includes(current.id)) {
+          const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
+          setAwardedToday(nextAwarded);
+          const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
+          setAwardedIds(nextIds);
           try {
-            window.dispatchEvent(
-              new CustomEvent('notify', {
-                detail: {
-                  title: 'Points milestone reached',
-                  description: `Nice! You hit ${hit} pts today.`,
-                  level: 'success',
-                  href: '/dashboard',
-                },
-              })
-            );
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
           } catch {}
-        }
-
-        if (!wasCompleted) {
-          celebrateIfEnabled();
-          setRecentHealth((old) => pushRecent(old, current.id));
-
-          window.dispatchEvent(
-            new CustomEvent('notify', {
-              detail: {
-                title: 'Health task completed',
-                description: `${current.label}  +${current.points} pts`,
-                level: 'success',
-                href: '/tasks?section=health',
-              },
-            })
-          );
-
-          const entry = buildEntry(updated, ecoTasksRef.current, undefined, {
-            section: 'health',
-            taskId: current.id,
-            completed: true,
-          });
-          saveEntryToStorage(entry);
-
-          setHealthIndex(() => findNextIncompleteIndex(updated, idx));
+          void applyPointsDelta(-current.points, -1);
+          setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
         }
         return updated;
       });
@@ -1184,64 +1361,24 @@ export default function DashboardPage() {
         if (!prev.length) return prev;
         const idx = ecoIndexRef.current;
         const current = prev[idx];
-        if (!current) return prev;
-        const wasCompleted = current.completed;
-
-        const prevPoints =
-          [...healthTasksRef.current, ...prev].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
-
-        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
-
-        const newPoints =
-          [...healthTasksRef.current, ...updated].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
-
+        if (!current || !current.completed) return prev;
+        
+        const updated = prev.map((t, i) => (i === idx ? { ...t, completed: false } : t));
         localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
         playClickIfEnabled();
 
-        // Update database with new points
-        if (!wasCompleted && updated[idx].completed) {
-          updateDatabasePoints(newPoints);
-        }
-
-        if (Math.floor(newPoints / 100) > Math.floor(prevPoints / 100)) {
-          const hit = Math.floor(newPoints / 100) * 100;
+        if (awardedIdsRef.current.includes(current.id)) {
+          const nextAwarded = Math.max(0, awardedTodayRef.current - current.points);
+          setAwardedToday(nextAwarded);
+          const nextIds = awardedIdsRef.current.filter((id) => id !== current.id);
+          setAwardedIds(nextIds);
           try {
-            window.dispatchEvent(
-              new CustomEvent('notify', {
-                detail: {
-                  title: 'Points milestone reached',
-                  description: `Nice! You hit ${hit} pts today.`,
-                  level: 'success',
-                  href: '/dashboard',
-                },
-              })
-            );
+            localStorage.setItem(AWARDED_TODAY_KEY, String(nextAwarded));
+            localStorage.setItem(AWARDED_IDS_KEY, JSON.stringify(nextIds));
           } catch {}
-        }
-
-        if (!wasCompleted) {
-          celebrateIfEnabled();
-          setRecentEco((old) => pushRecent(old, current.id));
-
-          window.dispatchEvent(
-            new CustomEvent('notify', {
-              detail: {
-                title: 'Eco task completed',
-                description: `${current.label}  +${current.points} pts`,
-                level: 'success',
-                href: '/tasks?section=eco',
-              },
-            })
-          );
-
-          const entry = buildEntry(healthTasksRef.current, updated, undefined, {
-            section: 'eco',
-            taskId: current.id,
-            completed: true,
-          });
-          saveEntryToStorage(entry);
-
-          setEcoIndex(() => findNextIncompleteIndex(updated, idx));
+          void applyPointsDelta(-current.points, -1);
+          setTodaysDbPoints((prev) => Math.max(0, (prev ?? 0) - current.points));
+          setTotalDbTasks((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
         }
         return updated;
       });
@@ -1470,6 +1607,23 @@ export default function DashboardPage() {
 
           {/* Task Cards */}
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+            {/* Real-world Impact Card */}
+            <div className="lg:col-span-2">
+              <div className="rounded-2xl bg-white/90 border border-slate-100 p-5">
+                <p className="text-xs font-medium text-emerald-600 mb-1">Real-world impact</p>
+                <h3 className="text-lg font-semibold text-slate-900 mb-3">
+                  Today your actions saved {pointsToImpact(todaysPoints).kgCO2} kg CO₂
+                </h3>
+                <p className="text-sm text-slate-600 mb-2">
+                  That's like planting <span className="font-semibold">{pointsToImpact(todaysPoints).trees}</span> trees 🌳 or saving{' '}
+                  <span className="font-semibold">{pointsToImpact(todaysPoints).waterLiters}L</span> of water.
+                </p>
+                <p className="text-xs text-slate-500">
+                  At this pace you'll save {forecastImpact([80, 90, 110, 130, 125, 100, 120]).kgCO2} kg CO₂ this week. (Predictive Intelligence)
+                </p>
+              </div>
+            </div>
+
             {/* Health */}
             <DashboardCard
               title="Health Tasks"
@@ -1516,7 +1670,8 @@ export default function DashboardPage() {
                       task={healthTasks[healthIndex]}
                       index={healthIndex}
                       total={healthTasks.length}
-                      onToggle={() => handleToggleAndAutoAdvance('health')}
+                      onComplete={() => handleComplete('health')}
+                      onUndo={() => handleUndo('health')}
                       focusActive={healthMode === 'focus'}
                     />
 
@@ -1613,7 +1768,8 @@ export default function DashboardPage() {
                       task={ecoTasks[ecoIndex]}
                       index={ecoIndex}
                       total={ecoTasks.length}
-                      onToggle={() => handleToggleAndAutoAdvance('eco')}
+                      onComplete={() => handleComplete('eco')}
+                      onUndo={() => handleUndo('eco')}
                       focusActive={ecoMode === 'focus'}
                     />
 

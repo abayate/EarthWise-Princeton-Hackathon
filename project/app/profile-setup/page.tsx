@@ -109,20 +109,16 @@ export default function ProfileSetup() {
         <div className="space-y-4 text-left">
           <div className="space-y-2">
             <Label htmlFor="full_name">Full Name</Label>
-            <Input id="full_name" value={form.full_name} onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))} placeholder="Your name" />
+            <Input id="full_name" value={form.full_name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, full_name: e.target.value }))} placeholder="Your name" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="location">Location</Label>
-            <Input id="location" value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="City, Country" />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="bio">Bio</Label>
-            <Textarea id="bio" value={form.bio} onChange={e => setForm(f => ({ ...f, bio: e.target.value }))} placeholder="Tell us about yourself" className="h-24" />
+            <Input id="location" value={form.location} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, location: e.target.value }))} placeholder="City, Country" />
           </div>
           <div className="space-y-2">
             <Label>Avatar</Label>
             <div className="grid grid-cols-6 gap-3">
-              {PROFILE_ICONS.map(ic => (
+              {PROFILE_ICONS.map((ic: { id: string; src: string; label: string }) => (
                 <button key={ic.id} type="button" onClick={() => setForm(f => ({ ...f, avatarId: ic.id }))} className={`rounded-full overflow-hidden hover:ring-2 hover:ring-emerald-500 transition ${form.avatarId === ic.id ? 'ring-2 ring-emerald-600' : ''}`}>
                   <Avatar className="h-12 w-12">
                     <AvatarImage src={ic.src} alt={ic.label} />
@@ -131,40 +127,6 @@ export default function ProfileSetup() {
                 </button>
               ))}
             </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="hobbyInput">Hobbies</Label>
-            {form.hobbies.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
-                {form.hobbies.map((h, i) => (
-                  <span key={h + i} className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700">
-                    <span className="mr-1">{h}</span>
-                    <button type="button" className="p-0.5 rounded-full hover:bg-slate-200" onClick={() => setForm(f => ({ ...f, hobbies: f.hobbies.filter((_, idx) => idx !== i) }))}>
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <Input
-              id="hobbyInput"
-              value={hobbyInput}
-              placeholder="Type a hobby and press Enter"
-              onChange={e => setHobbyInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  const cleaned = hobbyInput.trim().replace(/\s+/g, ' ')
-                  if (cleaned && !form.hobbies.find(h => h.toLowerCase() === cleaned.toLowerCase())) {
-                    setForm(f => ({ ...f, hobbies: [...f.hobbies, cleaned] }))
-                  }
-                  setHobbyInput('')
-                } else if (e.key === 'Backspace' && hobbyInput === '' && form.hobbies.length) {
-                  setForm(f => ({ ...f, hobbies: f.hobbies.slice(0, -1) }))
-                }
-              }}
-            />
-            <p className="text-xs text-slate-500">Enter to add. Backspace (empty) removes last.</p>
           </div>
           {errorMsg && <p className="text-sm text-red-600">{errorMsg}</p>}
           <Button disabled={saving} onClick={handleSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700">

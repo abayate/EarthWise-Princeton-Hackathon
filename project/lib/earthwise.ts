@@ -99,9 +99,47 @@ export const STORAGE_KEYS = {
   
   /** Dispatch a "celebrate" event; GlobalUX listens and renders confetti */
   export function celebrateIfEnabled() {
-    const prefs = readPrefs();
-    if (!prefs.confetti || prefs.reduceMotion) return;
     if (typeof window === 'undefined') return;
-    window.dispatchEvent(new CustomEvent('earthwise:celebrate', { detail: { at: Date.now() } }));
+    try {
+      const prefs = readPrefs();
+      if (!prefs.confetti || prefs.reduceMotion) return;
+      window.dispatchEvent(new CustomEvent('earthwise:celebrate'));
+    } catch {
+      // swallow
+    }
   }
-  
+
+/** ---- Environmental Impact Calculations ---- */
+
+export type Impact = {
+  points: number;
+  kgCO2: number;
+  trees: number;
+  waterLiters: number;
+};
+
+export function pointsToImpact(points: number): Impact {
+  // very simple model: 1 point ≈ 0.45 kg CO2 avoided
+  const kgCO2 = points * 0.45;
+  // EPA-ish rough figure: 1 tree ~ 21kg CO2 / year
+  const trees = kgCO2 / 21;
+  // fun stat: 1 point = 2.5 liters of water saved
+  const waterLiters = points * 2.5;
+
+  return {
+    points,
+    kgCO2: Number(kgCO2.toFixed(1)),
+    trees: Number(trees.toFixed(2)),
+    waterLiters: Number(waterLiters.toFixed(1)),
+  };
+}
+
+// simple forecaster for Chestnut Forty track
+export function forecastImpact(past7DaysPoints: number[]): Impact {
+  const avg =
+    past7DaysPoints.length > 0
+      ? past7DaysPoints.reduce((a, b) => a + b, 0) / past7DaysPoints.length
+      : 120; // fallback
+  // forecast for next 7 days
+  return pointsToImpact(avg * 7);
+}
