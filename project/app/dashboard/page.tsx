@@ -19,11 +19,33 @@ import {
   Sparkles,
   Lightbulb,
   CheckCircle2,
+  ArrowUpRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { STORAGE_KEYS, celebrateIfEnabled, playClickIfEnabled } from '@/lib/earthwise';
+import { supabase } from '@/lib/supabase';
+
+/* ---------------- Profile key ---------------- */
+const PROFILE_KEY = 'EW_PROFILE_V1';
+
+/* -------- Leaderboard + aggregates keys (UPDATED) -------- */
+const LB_POINTS_KEY = 'EW_TODAYS_POINTS_V1';          // carries MONTHLY points for leaderboard
+const LB_DATA_KEY   = 'EW_LEADERBOARD_DATA_V1';
+const MONTHLY_POINTS_KEY = 'EW_MONTHLY_POINTS_V1';    // number (monthly sum)
+const TOTAL_POINTS_KEY   = 'EW_TOTAL_POINTS_V1';      // number (lifetime sum)
+const LIFETIME_BASELINE_KEY = 'EW_LIFETIME_BASELINE_V1'; // number (pre-existing lifetime points)
 
 /* ---------------- Types ---------------- */
+type Profile = {
+  id: string;
+  createdAt: string;
+  name?: string;
+  about?: string;
+  healthRating: number; // 1-5
+  ecoRating: number;    // 1-5
+  interests: string[];
+};
+
 type TaskDetails = {
   about: string;
   health: string;
@@ -50,7 +72,7 @@ type DayEntry = {
   date: string; // YYYY-MM-DD
   ts: number;   // epoch ms
   totals: {
-    points: number;
+    points: number;              // points for that day (today starts at 0)
     completedCount: number;
     healthCompleted: number;
     ecoCompleted: number;
@@ -64,7 +86,8 @@ const ENTRIES_KEY = 'EW_ENTRIES_V1';
 const ENTRIES_LIMIT = 180;
 
 /* ---------------- Scoring / UI constants ---------------- */
-const BASE_POINTS = 240;
+/** TODAY starts from 0 now. We award only task points. */
+const BASE_POINTS = 0;
 const BASE_TOTAL_TASKS = 12;
 const DAILY_COMPLETION_THRESHOLD = 1;
 const RECENT_LIMIT = 5;
@@ -106,7 +129,7 @@ const HEALTH_DETAILS: Record<string, TaskDetails> = {
   'steps-8000': {
     about: 'Accumulate at least 8,000 steps across the day.',
     health:
-      'Associated with lower all-ccause mortality and better cardiometabolic health; breaks up sedentary time.',
+      'Associated with lower all-cause mortality and better cardiometabolic health; breaks up sedentary time.',
     environment:
       'Short errand walks can replace some car trips, indirectly reducing local emissions.',
     tips: ['Park farther, take stairs, do 5-minute movement breaks each hour.'],
@@ -364,40 +387,298 @@ function saveEntryToStorage(entry: DayEntry) {
   }
 }
 
+/* ---------- All available default tasks (for seeding) ---------- */
+const ALL_HEALTH: Task[] = [
+  { id: 'yoga-20', label: '20-minute yoga', points: 20, completed: false },
+  { id: 'strength-15', label: '15-minute strength training', points: 25, completed: false },
+  { id: 'intervals-10', label: '10-minute intervals', points: 20, completed: false },
+  { id: 'healthy-breakfast', label: 'Healthy breakfast (protein + fruit)', points: 15, completed: false },
+  { id: 'steps-8000', label: '8,000 steps', points: 25, completed: false },
+  { id: 'sleep-8h', label: 'Sleep 8 hours', points: 30, completed: false },
+  { id: 'screen-breaks', label: 'Screen breaks every hour', points: 10, completed: false },
+  { id: 'journaling-5', label: '5-minute journaling', points: 10, completed: false },
+  { id: 'breathing-3', label: '3-minute breathing exercise', points: 10, completed: false },
+  { id: 'posture-x3', label: 'Posture check ×3', points: 5, completed: false },
+];
+
+const ALL_ECO: Task[] = [
+  { id: 'meatless-meal', label: 'Meatless meal', points: 25, completed: false },
+  { id: 'cold-wash-laundry', label: 'Cold-wash laundry', points: 15, completed: false },
+  { id: 'short-shower-5', label: '5-minute shower', points: 15, completed: false },
+  { id: 'unplug-standby', label: 'Unplug idle devices', points: 10, completed: false },
+  { id: 'thermostat-1deg', label: 'Thermostat ±1°F adjustment', points: 15, completed: false },
+  { id: 'reusable-mug-bottle', label: 'Bring a reusable mug/bottle', points: 10, completed: false },
+  { id: 'recycle-sort', label: 'Sort & recycle properly', points: 10, completed: false },
+  { id: 'compost-scraps', label: 'Collect food scraps for composting', points: 20, completed: false },
+  { id: 'public-transit-carpool', label: 'Use public transit or carpool', points: 30, completed: false },
+  { id: 'no-single-use-plastic', label: 'No single-use plastic today', points: 25, completed: false },
+];
+
+/* ---------- Personalization: interest → task ids ---------- */
+const INTEREST_MAP_HEALTH: Record<string, string[]> = {
+  fitness: ['yoga-20', 'strength-15', 'intervals-10', 'steps-8000'],
+  sleep: ['sleep-8h'],
+  nutrition: ['healthy-breakfast'],
+  mindfulness: ['journaling-5', 'breathing-3'],
+  transport: ['steps-8000'],
+};
+
+const INTEREST_MAP_ECO: Record<string, string[]> = {
+  recycling: ['recycle-sort'],
+  water: ['short-shower-5'],
+  energy: ['unplug-standby', 'thermostat-1deg'],
+  transport: ['public-transit-carpool'],
+  plastic: ['no-single-use-plastic', 'reusable-mug-bottle'],
+};
+
+/* ---------- Personalization helpers ---------- */
+function unique<T>(arr: T[]) {
+  return Array.from(new Set(arr));
+}
+
+function chooseCountFromRating(rating: number, min = 5, mid = 8, max = 10) {
+  if (rating <= 1) return Math.max(4, min);
+  if (rating === 2) return Math.max(6, min + 1);
+  if (rating === 3) return mid;
+  if (rating === 4) return Math.min(9, max - 1);
+  return max; // 5
+}
+
+function rankAndSelect(
+  universe: Task[],
+  interestMap: Record<string, string[]>,
+  selectedInterests: string[],
+  rating: number
+): Task[] {
+  const wantedIds = unique(
+    selectedInterests.flatMap((k) => interestMap[k] || [])
+  );
+  const scored = universe.map((t, idx) => ({
+    t,
+    score: wantedIds.includes(t.id) ? 1000 - idx : 500 - idx,
+  }));
+  scored.sort((a, b) => b.score - a.score);
+
+  const count = chooseCountFromRating(rating);
+  const picked = scored.slice(0, Math.min(count, universe.length)).map((x) => x.t);
+
+  return unique(picked);
+}
+
+/* ---------- NEW: points milestone helper ---------- */
+type MilestoneState = {
+  next: number;
+  remaining: number;
+  percentToNext: number; // 0..1
+  hitExact: boolean;
+  message: string;
+  pillClass: string;
+};
+
+function computeMilestone(points: number): MilestoneState {
+  const onHundred = points % 100 === 0 && points !== 0;
+  const next = onHundred ? points + 100 : (Math.floor(points / 100) + 1) * 100;
+  const remaining = next - points;
+  const within = onHundred ? 0 : points % 100;
+  const pct = onHundred ? 0 : within / 100;
+
+  let message = '';
+  let pillClass = 'bg-slate-100 text-slate-700';
+
+  if (points === 0) {
+    message = `Knock out a task to start earning points.`;
+  } else if (onHundred) {
+    message = `Milestone unlocked: ${points}. Next target ${next} (+100 pts).`;
+    pillClass = 'bg-green-50 text-green-700';
+  } else if (pct < 0.25) {
+    message = `Next milestone at ${next} — ${remaining} pts to go.`;
+    pillClass = 'bg-slate-100 text-slate-700';
+  } else if (pct < 0.5) {
+    message = `Quarter way to ${next} — ${remaining} pts to go.`;
+    pillClass = 'bg-blue-50 text-blue-700';
+  } else if (pct < 0.75) {
+    message = `Halfway to ${next}! ${remaining} pts to go.`;
+    pillClass = 'bg-indigo-50 text-indigo-700';
+  } else if (pct < 0.9) {
+    message = `Close to ${next} — ${remaining} pts left.`;
+    pillClass = 'bg-amber-50 text-amber-700';
+  } else {
+    message = `Just ${remaining} pts for ${next} — one task might do it.`;
+    pillClass = 'bg-green-50 text-green-700';
+  }
+
+  return { next, remaining, percentToNext: pct, hitExact: onHundred, message, pillClass };
+}
+
+/* ---------- SMALL TOP-LEVEL UI PIECES ---------- */
+function PointsPill({ points }: { points?: number }) {
+  if (typeof points !== 'number') return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+      <Sparkles className="h-3.5 w-3.5" />
+      +{points} pts
+    </span>
+  );
+}
+
+function CurrentTaskCard({
+  section,
+  task,
+  index,
+  total,
+  onToggle,
+  focusActive,
+}: {
+  section: 'health' | 'eco';
+  task?: Task;
+  index: number;
+  total: number;
+  onToggle: () => void;
+  focusActive: boolean;
+}) {
+  const a = accent(section);
+  return (
+    <div
+      className={`relative flex items-center justify-between p-4 rounded-2xl border bg-white
+      ${focusActive ? `${a.ring} border-transparent shadow-md` : 'border-slate-100'}`}
+    >
+      {focusActive && (
+        <div className="pointer-events-none absolute -top-6 -right-6 h-16 w-16 rounded-full bg-gradient-to-br from-white/0 to-black/5 blur-2xl" />
+      )}
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-semibold text-slate-900">
+            {task?.label ?? '—'}
+          </p>
+          <PointsPill points={task?.points} />
+        </div>
+        <p className="text-[11px] text-slate-500 mt-0.5">
+          Task {index + 1} of {total}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant={task?.completed ? 'default' : 'outline'}
+        onClick={onToggle}
+        aria-label={task?.completed ? 'Undo task' : 'Complete task'}
+      >
+        {task?.completed ? 'Undo' : 'Complete'}
+      </Button>
+    </div>
+  );
+}
+
+/* ---------- Leaderboard seed ---------- */
+type LBUser = { id: number; name: string; score: number; avatar?: string };
+const LB_SEED: LBUser[] = [
+  { id: 1, name: 'Alex Chen', score: 2150 },
+  { id: 2, name: 'Sarah Miller', score: 1950 },
+  { id: 3, name: 'James Wilson', score: 1840 },
+  { id: 4, name: 'Emma Davis', score: 1720 },
+  { id: 5, name: 'Michael Brown', score: 1680 },
+  { id: 6, name: 'Lisa Taylor', score: 1590 },
+  { id: 7, name: 'David Park', score: 1520 },
+  { id: 8, name: 'Rachel Green', score: 1480 },
+  { id: 9, name: 'Thomas Lee', score: 1440 },
+  { id: 10, name: 'Jessica Kim', score: 1390 },
+];
+
+/* --- compute rank & “gap to next” --- */
+function computeRankAndGap(myScore: number, board: LBUser[]) {
+  const combined = [...board, { id: 0, name: 'You', score: myScore }];
+  combined.sort((a, b) => b.score - a.score);
+  const meIdx = combined.findIndex((u) => u.id === 0);
+  const myRank = meIdx + 1;
+  if (meIdx <= 0) return { myRank, gap: 0, nextName: null as string | null };
+  const ahead = combined[meIdx - 1];
+  const gap = Math.max(0, ahead.score - myScore + 1);
+  return { myRank, gap, nextName: ahead.name };
+}
+
+/* ======= NEW: Lifetime baseline (simulated prior usage) ======= */
+function ensureLifetimeBaseline(): number {
+  try {
+    const raw = localStorage.getItem(LIFETIME_BASELINE_KEY);
+    const parsed = raw ? parseInt(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+    // Seed once with a believable prior total (e.g., 3k–9k)
+    const baseline = 3000 + Math.floor(Math.random() * 6000);
+    localStorage.setItem(LIFETIME_BASELINE_KEY, String(baseline));
+    return baseline;
+  } catch {
+    return 3000; // safe fallback
+  }
+}
+
+/* ======= NEW: Aggregation helpers (Monthly & Total) ======= */
+/** Collapses entries to the latest snapshot per date (YYYY-MM-DD) */
+function latestPointsByDate(entries: DayEntry[]) {
+  const map = new Map<string, { points: number; ts: number }>();
+  for (const e of entries) {
+    const prev = map.get(e.date);
+    if (!prev || e.ts > prev.ts) {
+      map.set(e.date, { points: e.totals.points, ts: e.ts });
+    }
+  }
+  return map;
+}
+
+/** Compute monthly & lifetime totals; override today with live today'sPoints and add baseline to lifetime */
+function computeAggregates(todaysPoints: number) {
+  let entries: DayEntry[] = [];
+  try {
+    const raw = localStorage.getItem(ENTRIES_KEY);
+    entries = raw ? (JSON.parse(raw) as DayEntry[]) : [];
+  } catch {}
+
+  const latest = latestPointsByDate(entries);
+
+  // Override today's date with current live total to avoid mid-day stale sums
+  const todayK = dateKey();
+  latest.set(todayK, { points: todaysPoints, ts: Date.now() });
+
+  const now = new Date();
+  const ymPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const baseline = ensureLifetimeBaseline();
+
+  let monthlyPoints = 0;
+  let totalPoints = baseline; // start with simulated prior lifetime
+
+  for (const [d, v] of latest) {
+    totalPoints += v.points;
+    if (d.startsWith(ymPrefix)) monthlyPoints += v.points;
+  }
+
+  return { monthlyPoints, totalPoints };
+}
+
 /* ===========================
    Dashboard Page
    =========================== */
 export default function DashboardPage() {
-  const defaultHealth: Task[] = attachDetails(
-    [
-      { id: 'yoga-20', label: '20-minute yoga', points: 20, completed: false },
-      { id: 'strength-15', label: '15-minute strength training', points: 25, completed: false },
-      { id: 'intervals-10', label: '10-minute intervals', points: 20, completed: false },
-      { id: 'healthy-breakfast', label: 'Healthy breakfast (protein + fruit)', points: 15, completed: false },
-      { id: 'steps-8000', label: '8,000 steps', points: 25, completed: false },
-      { id: 'sleep-8h', label: 'Sleep 8 hours', points: 30, completed: false },
-      { id: 'screen-breaks', label: 'Screen breaks every hour', points: 10, completed: false },
-      { id: 'journaling-5', label: '5-minute journaling', points: 10, completed: false },
-      { id: 'breathing-3', label: '3-minute breathing exercise', points: 10, completed: false },
-      { id: 'posture-x3', label: 'Posture check ×3', points: 5, completed: false },
-    ],
-    HEALTH_DETAILS
-  );
-  const defaultEco: Task[] = attachDetails(
-    [
-      { id: 'meatless-meal', label: 'Meatless meal', points: 25, completed: false },
-      { id: 'cold-wash-laundry', label: 'Cold-wash laundry', points: 15, completed: false },
-      { id: 'short-shower-5', label: '5-minute shower', points: 15, completed: false },
-      { id: 'unplug-standby', label: 'Unplug idle devices', points: 10, completed: false },
-      { id: 'thermostat-1deg', label: 'Thermostat ±1°F adjustment', points: 15, completed: false },
-      { id: 'reusable-mug-bottle', label: 'Bring a reusable mug/bottle', points: 10, completed: false },
-      { id: 'recycle-sort', label: 'Sort & recycle properly', points: 10, completed: false },
-      { id: 'compost-scraps', label: 'Compost food scraps', points: 20, completed: false },
-      { id: 'public-transit-carpool', label: 'Use public transit or carpool', points: 30, completed: false },
-      { id: 'no-single-use-plastic', label: 'No single-use plastic today', points: 25, completed: false },
-    ],
-    ECO_DETAILS
-  );
+  const [profile, setProfile] = useState<Profile | null>(null);
+
+  // Leaderboard static data (others). Live board published by /leaderboard page.
+  const [leaderboardData, setLeaderboardData] = useState<LBUser[]>(LB_SEED);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LB_DATA_KEY);
+      if (raw) setLeaderboardData(JSON.parse(raw) as LBUser[]);
+    } catch {}
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LB_DATA_KEY && e.newValue) {
+        try { setLeaderboardData(JSON.parse(e.newValue) as LBUser[]); } catch {}
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // Defaults used if no saved tasks and no profile
+  const defaultHealth = attachDetails(ALL_HEALTH, HEALTH_DETAILS);
+  const defaultEco = attachDetails(ALL_ECO, ECO_DETAILS);
 
   const [healthTasks, setHealthTasks] = useState<Task[]>(defaultHealth);
   const [ecoTasks, setEcoTasks] = useState<Task[]>(defaultEco);
@@ -423,44 +704,152 @@ export default function DashboardPage() {
   const [recentHealth, setRecentHealth] = useState<string[]>([]);
   const [recentEco, setRecentEco] = useState<string[]>([]);
 
-  /* ---- load persisted ---- */
+  // Track database points
+  const [dbTodaysPoints, setDbTodaysPoints] = useState<number>(0);
+
+  // Function to update database with new points
+  async function updateDatabasePoints(newTodaysPoints: number) {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData?.user) return;
+
+    // Calculate the difference to add to total_points
+    const pointsToAdd = newTodaysPoints - dbTodaysPoints;
+
+    // First get current total_points
+    const { data: currentProfile } = await supabase
+      .from('profiles')
+      .select('total_points')
+      .eq('id', userData.user.id)
+      .single();
+
+    if (!currentProfile) return;
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        todays_points: newTodaysPoints,
+        total_points: (currentProfile.total_points || 0) + pointsToAdd,
+      })
+      .eq('id', userData.user.id);
+
+    if (!error) {
+      setDbTodaysPoints(newTodaysPoints);
+    }
+  }
+
+  /* ---- load profile + persisted state; seed from profile on first run ---- */
   useEffect(() => {
-    try {
-      const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
-      const eRaw = localStorage.getItem(STORAGE_KEYS.ECO);
-      const logRaw = localStorage.getItem(STORAGE_KEYS.LOG);
+    async function loadProfile() {
+      try {
+        // Ensure we have a lifetime baseline stored (simulated prior usage)
+        ensureLifetimeBaseline();
+
+        // Load profile from Supabase (logged-in user)
+        const { data: userData } = await supabase.auth.getUser();
+        let p: Profile | null = null;
+
+        if (userData?.user) {
+          const { data: dbProfile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userData.user.id)
+            .maybeSingle();
+
+          if (dbProfile) {
+            // Map DB profile to local Profile type
+            p = {
+              id: dbProfile.id,
+              createdAt: dbProfile.created_at,
+              name: dbProfile.full_name || undefined,
+              about: dbProfile.bio || undefined,
+              healthRating: dbProfile.overall_contentment || 3,
+              ecoRating: dbProfile.eco_friendly_score || 3,
+              interests: Array.isArray(dbProfile.hobbies) ? dbProfile.hobbies : [],
+            };
+
+            // Load today's points from database
+            setDbTodaysPoints(dbProfile.todays_points || 0);
+          }
+        }
+
+        // Fallback to localStorage profile if DB profile not found
+        if (!p) {
+          const pRaw = localStorage.getItem(PROFILE_KEY);
+          p = pRaw ? JSON.parse(pRaw) : null;
+        }
+
+        setProfile(p);
+
+        // Existing persisted task state
+        const hRaw = localStorage.getItem(STORAGE_KEYS.HEALTH);
+        const eRaw = localStorage.getItem(STORAGE_KEYS.ECO);
+        const logRaw = localStorage.getItem(STORAGE_KEYS.LOG);
       const lastOpenRaw = localStorage.getItem(STORAGE_KEYS.LAST_OPEN);
       const rhRaw = localStorage.getItem(STORAGE_KEYS.RECENT_HEALTH);
       const reRaw = localStorage.getItem(STORAGE_KEYS.RECENT_ECO);
       const hmRaw = localStorage.getItem(STORAGE_KEYS.MODE_HEALTH);
       const emRaw = localStorage.getItem(STORAGE_KEYS.MODE_ECO);
 
-      const h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : defaultHealth;
-      const e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : defaultEco;
+      let h = hRaw ? attachDetails(JSON.parse(hRaw) as Task[], HEALTH_DETAILS) : null;
+      let e = eRaw ? attachDetails(JSON.parse(eRaw) as Task[], ECO_DETAILS) : null;
 
       const log = logRaw ? (JSON.parse(logRaw) as DailyLog) : {};
       const rh = rhRaw ? (JSON.parse(rhRaw) as string[]) : [];
       const re = reRaw ? (JSON.parse(reRaw) as string[]) : [];
 
-      const hm: ViewMode = hmRaw === 'focus' ? 'focus' : 'browse';
-      const em: ViewMode = emRaw === 'focus' ? 'focus' : 'browse';
+      let hm: ViewMode = hmRaw === 'focus' ? 'focus' : 'browse';
+      let em: ViewMode = emRaw === 'focus' ? 'focus' : 'browse';
 
       const todayK = dateKey();
 
+      // If first run (no stored tasks) but we have profile → seed personalized lists
+      if ((!h || !h.length || !e || !e.length) && p) {
+        const seededHealth = rankAndSelect(ALL_HEALTH, INTEREST_MAP_HEALTH, p.interests || [], p.healthRating || 3);
+        const seededEco = rankAndSelect(ALL_ECO, INTEREST_MAP_ECO, p.interests || [], p.ecoRating || 3);
+        h = attachDetails(seededHealth, HEALTH_DETAILS);
+        e = attachDetails(seededEco, ECO_DETAILS);
+
+        // Bias to focus mode if baseline is low (1–2)
+        if ((p.healthRating || 3) <= 2) hm = 'focus';
+        if ((p.ecoRating || 3) <= 2) em = 'focus';
+
+        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(h));
+        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(e));
+        localStorage.setItem(STORAGE_KEYS.MODE_HEALTH, hm);
+        localStorage.setItem(STORAGE_KEYS.MODE_ECO, em);
+
+        try {
+          window.dispatchEvent(
+            new CustomEvent('notify', {
+              detail: {
+                title: 'Personalized plan ready',
+                description: 'Tasks prioritized from your onboarding survey.',
+                level: 'success',
+                href: '/tasks',
+              },
+            })
+          );
+        } catch {}
+      }
+
+      // If we still don’t have seeded lists, fall back to defaults
+      const healthFinal = h ?? defaultHealth;
+      const ecoFinal = e ?? defaultEco;
+
       if (lastOpenRaw && lastOpenRaw !== todayK) {
-        const rolloverEntry = buildEntry(h, e, lastOpenRaw, { section: 'rollover' });
+        const rolloverEntry = buildEntry(healthFinal, ecoFinal, lastOpenRaw, { section: 'rollover' });
         saveEntryToStorage(rolloverEntry);
 
         const reset = (tasks: Task[]) => tasks.map((t) => ({ ...t, completed: false }));
-        setHealthTasks(reset(h));
-        setEcoTasks(reset(e));
+        setHealthTasks(reset(healthFinal));
+        setEcoTasks(reset(ecoFinal));
         setHealthIndex(0);
         setEcoIndex(0);
         setRecentHealth([]);
         setRecentEco([]);
       } else {
-        setHealthTasks(h);
-        setEcoTasks(e);
+        setHealthTasks(healthFinal);
+        setEcoTasks(ecoFinal);
         setRecentHealth(rh);
         setRecentEco(re);
       }
@@ -470,18 +859,22 @@ export default function DashboardPage() {
 
       setDailyLog(pruneLog(log));
       localStorage.setItem(STORAGE_KEYS.LAST_OPEN, todayK);
-    } catch {
-      setHealthTasks(defaultHealth);
-      setEcoTasks(defaultEco);
-      setDailyLog({});
-      setHealthIndex(0);
-      setEcoIndex(0);
-      setRecentHealth([]);
-      setRecentEco([]);
-      setHealthMode('browse');
-      setEcoMode('browse');
-      localStorage.setItem(STORAGE_KEYS.LAST_OPEN, dateKey());
+      } catch (err) {
+        console.error('Profile load error:', err);
+        setProfile(null);
+        setHealthTasks(defaultHealth);
+        setEcoTasks(defaultEco);
+        setDailyLog({});
+        setHealthIndex(0);
+        setEcoIndex(0);
+        setRecentHealth([]);
+        setRecentEco([]);
+        setHealthMode('browse');
+        setEcoMode('browse');
+        localStorage.setItem(STORAGE_KEYS.LAST_OPEN, dateKey());
+      }
     }
+    loadProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -517,12 +910,47 @@ export default function DashboardPage() {
   );
 
   const todaysPoints = useMemo(() => {
-    const extra = [...healthTasks, ...ecoTasks].reduce(
+    // Use database value if available, otherwise calculate from tasks
+    if (dbTodaysPoints > 0) return dbTodaysPoints;
+    
+    // TODAY = sum of completed task point values only (starts at 0)
+    return [...healthTasks, ...ecoTasks].reduce(
       (sum, t) => sum + (t.completed ? t.points : 0),
       0
     );
-    return BASE_POINTS + extra;
-  }, [healthTasks, ecoTasks]);
+  }, [healthTasks, ecoTasks, dbTodaysPoints]);
+
+  /* ===== NEW: compute & publish Monthly/Total + Leaderboard sync ===== */
+  const [monthlyPoints, setMonthlyPoints] = useState<number>(0);
+  const [totalPoints, setTotalPoints] = useState<number>(0);
+
+  useEffect(() => {
+    const { monthlyPoints: m, totalPoints: t } = computeAggregates(todaysPoints);
+    setMonthlyPoints(m);
+    setTotalPoints(t);
+
+    try {
+      // Persist + notify same-tab listeners (Sidebar)
+      localStorage.setItem(MONTHLY_POINTS_KEY, String(m));
+      window.dispatchEvent(new StorageEvent('storage', { key: MONTHLY_POINTS_KEY, newValue: String(m) }));
+
+      localStorage.setItem(TOTAL_POINTS_KEY, String(t));
+      window.dispatchEvent(new StorageEvent('storage', { key: TOTAL_POINTS_KEY, newValue: String(t) }));
+
+      // Publish monthly score to leaderboard
+      localStorage.setItem(LB_POINTS_KEY, String(m));
+      window.dispatchEvent(new CustomEvent('leaderboardUpdate', { detail: { points: m } }));
+    } catch {}
+  }, [todaysPoints]);
+
+  // Progressive milestone (based on Today’s Points starting at 0)
+  const milestone = useMemo(() => computeMilestone(todaysPoints), [todaysPoints]);
+
+  // Leaderboard “gap to next” based on **Monthly Points**
+  const { myRank, gap, nextName } = useMemo(
+    () => computeRankAndGap(monthlyPoints, leaderboardData),
+    [monthlyPoints, leaderboardData]
+  );
 
   const totalTasksDisplay = useMemo(
     () => BASE_TOTAL_TASKS + completedCountToday,
@@ -550,7 +978,7 @@ export default function DashboardPage() {
     window.addEventListener('storage', handleStorageChange);
 
     const handleCustom = (e: Event) => {
-      const ce = e as CustomEvent<{ key?: string; value?: string }>;
+      const ce = (e as CustomEvent<{ key?: string; value?: string }>);
       const { key, value } = ce.detail || {};
       if (!key || !value) return;
       if (key === STORAGE_KEYS.HEALTH) {
@@ -690,28 +1118,45 @@ export default function DashboardPage() {
         if (!current) return prev;
         const wasCompleted = current.completed;
 
+        // points before toggling (today starts at 0)
+        const prevPoints =
+          [...prev, ...ecoTasksRef.current].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+
         const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
 
-        // debug: log toggle flow and derived counts to help trace a bug
-        try {
-          const newHealthCompleted = updated.filter((t) => t.completed).length;
-          const newTotalPoints = BASE_POINTS + [...updated, ...ecoTasksRef.current].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
-          // eslint-disable-next-line no-console
-          console.debug('[EW] health toggle', { idx, id: current.id, wasCompleted, newHealthCompleted, newTotalPoints });
-        } catch (err) {
-          // ignore logging errors
+        // points after toggling
+        const newPoints =
+          [...updated, ...ecoTasksRef.current].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+
+        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
+        playClickIfEnabled();
+
+        // Update database with new points
+        if (!wasCompleted && updated[idx].completed) {
+          updateDatabasePoints(newPoints);
         }
 
-        // persist to localStorage; same-window listeners already use state, so avoid re-dispatching
-        localStorage.setItem(STORAGE_KEYS.HEALTH, JSON.stringify(updated));
-
-        playClickIfEnabled();
+        // Notify when crossing a 100-pt boundary upward
+        if (Math.floor(newPoints / 100) > Math.floor(prevPoints / 100)) {
+          const hit = Math.floor(newPoints / 100) * 100;
+          try {
+            window.dispatchEvent(
+              new CustomEvent('notify', {
+                detail: {
+                  title: 'Points milestone reached',
+                  description: `Nice! You hit ${hit} pts today.`,
+                  level: 'success',
+                  href: '/dashboard',
+                },
+              })
+            );
+          } catch {}
+        }
 
         if (!wasCompleted) {
           celebrateIfEnabled();
           setRecentHealth((old) => pushRecent(old, current.id));
 
-          // 🔔 NEW: Fire TopBar notification (bell stripe + menu item)
           window.dispatchEvent(
             new CustomEvent('notify', {
               detail: {
@@ -723,7 +1168,6 @@ export default function DashboardPage() {
             })
           );
 
-          // Snapshot full state (health AFTER update, eco current)
           const entry = buildEntry(updated, ecoTasksRef.current, undefined, {
             section: 'health',
             taskId: current.id,
@@ -743,28 +1187,42 @@ export default function DashboardPage() {
         if (!current) return prev;
         const wasCompleted = current.completed;
 
+        const prevPoints =
+          [...healthTasksRef.current, ...prev].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+
         const updated = prev.map((t, i) => (i === idx ? { ...t, completed: !t.completed } : t));
 
-        // debug: log toggle flow and derived counts to help trace a bug
-        try {
-          const newEcoCompleted = updated.filter((t) => t.completed).length;
-          const newTotalPoints = BASE_POINTS + [...healthTasksRef.current, ...updated].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
-          // eslint-disable-next-line no-console
-          console.debug('[EW] eco toggle', { idx, id: current.id, wasCompleted, newEcoCompleted, newTotalPoints });
-        } catch (err) {
-          // ignore logging errors
+        const newPoints =
+          [...healthTasksRef.current, ...updated].reduce((s, t) => s + (t.completed ? t.points : 0), 0);
+
+        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
+        playClickIfEnabled();
+
+        // Update database with new points
+        if (!wasCompleted && updated[idx].completed) {
+          updateDatabasePoints(newPoints);
         }
 
-        // persist to localStorage; same-window listeners already use state, so avoid re-dispatching
-        localStorage.setItem(STORAGE_KEYS.ECO, JSON.stringify(updated));
-
-        playClickIfEnabled();
+        if (Math.floor(newPoints / 100) > Math.floor(prevPoints / 100)) {
+          const hit = Math.floor(newPoints / 100) * 100;
+          try {
+            window.dispatchEvent(
+              new CustomEvent('notify', {
+                detail: {
+                  title: 'Points milestone reached',
+                  description: `Nice! You hit ${hit} pts today.`,
+                  level: 'success',
+                  href: '/dashboard',
+                },
+              })
+            );
+          } catch {}
+        }
 
         if (!wasCompleted) {
           celebrateIfEnabled();
           setRecentEco((old) => pushRecent(old, current.id));
 
-          // 🔔 NEW: Fire TopBar notification (bell stripe + menu item)
           window.dispatchEvent(
             new CustomEvent('notify', {
               detail: {
@@ -776,7 +1234,6 @@ export default function DashboardPage() {
             })
           );
 
-          // Snapshot full state (eco AFTER update, health current)
           const entry = buildEntry(healthTasksRef.current, updated, undefined, {
             section: 'eco',
             taskId: current.id,
@@ -791,7 +1248,6 @@ export default function DashboardPage() {
     }
   }
 
-  const streakLabel = `${currentStreak} day${currentStreak === 1 ? '' : 's'}`;
   const streakActive = dailyLog[dateKey()] === true;
 
   /* ---- small UI helpers ---- */
@@ -864,16 +1320,6 @@ export default function DashboardPage() {
     );
   }
 
-  function PointsPill({ points }: { points?: number }) {
-    if (typeof points !== 'number') return null;
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-        <Sparkles className="h-3.5 w-3.5" />
-        +{points} pts
-      </span>
-    );
-  }
-
   function DetailsPanel({
     details,
     section,
@@ -936,59 +1382,18 @@ export default function DashboardPage() {
     );
   }
 
-  /* ---- current task panel ---- */
-  function CurrentTaskCard({
-    section,
-    task,
-    index,
-    total,
-    onToggle,
-    focusActive,
-  }: {
-    section: 'health' | 'eco';
-    task?: Task;
-    index: number;
-    total: number;
-    onToggle: () => void;
-    focusActive: boolean;
-  }) {
-    const a = accent(section);
-    return (
-      <div
-        className={`relative flex items-center justify-between p-4 rounded-2xl border bg-white
-        ${focusActive ? `${a.ring} border-transparent shadow-md` : 'border-slate-100'}`}
-      >
-        {focusActive && (
-          <div className="pointer-events-none absolute -top-6 -right-6 h-16 w-16 rounded-full bg-gradient-to-br from-white/0 to-black/5 blur-2xl" />
-        )}
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-semibold text-slate-900">
-              {task?.label ?? '—'}
-            </p>
-            <PointsPill points={task?.points} />
-          </div>
-          <p className="text-[11px] text-slate-500 mt-0.5">
-            Task {index + 1} of {total}
-          </p>
-        </div>
-        <Button
-          size="sm"
-          variant={task?.completed ? 'default' : 'outline'}
-          onClick={onToggle}
-          aria-label={task?.completed ? 'Undo task' : 'Complete task'}
-        >
-          {task?.completed ? 'Undo' : 'Complete'}
-        </Button>
-      </div>
-    );
-  }
+  // ----- dynamic TopBar subtitle from profile -----
+  const topSubtitle = useMemo(() => {
+    const name = profile?.name?.trim();
+    if (name) return `Welcome, ${name}`;
+    return 'Track your progress and stay motivated';
+  }, [profile]);
 
   return (
     <div className="relative flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
-        <TopBar title="Dashboard" subtitle="Track your progress and stay motivated" />
+        <TopBar title="Dashboard" subtitle={topSubtitle} />
 
         <main className="mx-auto max-w-6xl py-8 px-4">
           {/* Top stats row */}
@@ -1003,6 +1408,24 @@ export default function DashboardPage() {
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100">
                   <Award className="h-6 w-6 text-green-600" />
                 </div>
+              </div>
+
+              {/* progressive milestone */}
+              <div className={`mt-3 inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs ${milestone.pillClass}`}>
+                <Sparkles className="h-4 w-4" />
+                <span>{milestone.message}</span>
+              </div>
+
+              {/* Leaderboard gap (Monthly-based) */}
+              <div className="mt-2 inline-flex items-center gap-2 rounded-md bg-emerald-50 text-emerald-700 px-2 py-1 text-xs">
+                <ArrowUpRight className="h-4 w-4" />
+                {myRank === 1 ? (
+                  <span>You’re #1 — keep pushing!</span>
+                ) : (
+                  <span>
+                    Rank #{myRank} • {gap} pts to pass {nextName}
+                  </span>
+                )}
               </div>
             </div>
 

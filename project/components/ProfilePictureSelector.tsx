@@ -9,17 +9,26 @@ import PROFILE_ICONS from '@/components/profileIcons';
 
 const AVATAR_STORAGE_KEY = 'ew_avatar_v1';
 
-export default function ProfilePictureSelector() {
+interface ProfilePictureSelectorProps {
+  selectedUrl?: string;
+  onSelect?: (url: string) => void;
+}
+
+export default function ProfilePictureSelector({ selectedUrl, onSelect }: ProfilePictureSelectorProps) {
   const [savedAvatar, setSavedAvatar] = useState<string | null>(null);
   const [tempSelected, setTempSelected] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Load saved avatar on mount
+  // Load saved avatar on mount or use selected URL
   useEffect(() => {
-    const saved = localStorage.getItem(AVATAR_STORAGE_KEY);
-    if (saved) setSavedAvatar(saved);
-  }, []);
+    if (selectedUrl) {
+      setSavedAvatar(selectedUrl);
+    } else {
+      const saved = localStorage.getItem(AVATAR_STORAGE_KEY);
+      if (saved) setSavedAvatar(saved);
+    }
+  }, [selectedUrl]);
 
   // close on outside click
   useEffect(() => {
@@ -42,19 +51,29 @@ export default function ProfilePictureSelector() {
 
   const handleSave = () => {
     if (tempSelected) {
-      localStorage.setItem(AVATAR_STORAGE_KEY, tempSelected);
+      if (!selectedUrl) {
+        localStorage.setItem(AVATAR_STORAGE_KEY, tempSelected);
+      }
       setSavedAvatar(tempSelected);
       // notify other components
       window.dispatchEvent(new Event('storage'));
+      if (onSelect) {
+        onSelect(tempSelected);
+      }
     }
     setOpen(false);
   };
 
   const handleRemove = () => {
-    localStorage.removeItem(AVATAR_STORAGE_KEY);
+    if (!selectedUrl) {
+      localStorage.removeItem(AVATAR_STORAGE_KEY);
+    }
     setSavedAvatar(null);
     setTempSelected(null);
     window.dispatchEvent(new Event('storage'));
+    if (onSelect) {
+      onSelect('');
+    }
     setOpen(false);
   };
 

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useTheme } from 'next-themes';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import { Button } from '@/components/ui/button';
@@ -12,7 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import PageShell from '@/components/PageShell';
 import ProfilePictureSelector from '@/components/ProfilePictureSelector';
 import {
-  Download, Upload, RefreshCw, Sun, Moon, MonitorCog, Trash2, Database,
+  Download, Upload, RefreshCw, Trash2, Database,
   Shield, Sparkles, Volume2, Minimize2, Wind, BookOpen, X
 } from 'lucide-react';
 
@@ -63,8 +62,8 @@ function dateKey(d: Date = new Date()) {
 }
 
 export default function SettingsPage() {
-  const { theme, setTheme } = useTheme();
-  const dark = theme === 'dark';
+  // Hard-lock to light mode (no dark/system)
+  const dark = false;
 
   /** -------- Profile state -------- */
   const [profile, setProfile] = useState<Profile>({
@@ -358,10 +357,11 @@ export default function SettingsPage() {
     setTimeout(() => setMessage(null), 1500);
   }
 
-  const containerBg = dark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200';
-  const heading = dark ? 'text-white' : 'text-slate-900';
-  const sub = dark ? 'text-slate-400' : 'text-slate-600';
-  const inputTheme = dark ? 'bg-slate-700 border-slate-600 placeholder:text-slate-400' : '';
+  // Light-only styling branches
+  const containerBg = 'bg-white border-slate-200';
+  const heading = 'text-slate-900';
+  const sub = 'text-slate-600';
+  const inputTheme = '';
 
   const lastSavedProfile = useMemo(() => profileSavedAt ? new Date(profileSavedAt).toLocaleTimeString() : null, [profileSavedAt]);
   const lastSavedPrefs = useMemo(() => prefsSavedAt ? new Date(prefsSavedAt).toLocaleTimeString() : null, [prefsSavedAt]);
@@ -392,7 +392,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className={`flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white`}>
+    <div className="flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
         <TopBar title="Settings" subtitle="Adjust preferences for your EarthWise experience" />
@@ -412,39 +412,39 @@ export default function SettingsPage() {
 
               {/* Profile Picture Selector */}
               <div className="mb-6">
-                <ProfilePictureSelector dark={dark} />
+                <ProfilePictureSelector dark={false} />
               </div>
 
               <div className="grid gap-4">
                 <div>
-                  <Label htmlFor="name" className={dark ? 'text-white' : ''}>Full Name</Label>
+                  <Label htmlFor="name">Full Name</Label>
                   <Input
                     id="name"
                     placeholder="Your name"
-                    className={`mt-2 ${inputTheme}`}
+                    className="mt-2"
                     value={profile.name}
                     onChange={e => setProfile(p => ({ ...p, name: e.target.value }))}
                     aria-label="Full name input"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="email" className={dark ? 'text-white' : ''}>Email</Label>
+                  <Label htmlFor="email">Email</Label>
                   <Input
                     id="email"
                     type="email"
                     placeholder="your.email@example.com"
-                    className={`mt-2 ${inputTheme}`}
+                    className="mt-2"
                     value={profile.email}
                     onChange={e => setProfile(p => ({ ...p, email: e.target.value }))}
                     aria-label="Email input"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="location" className={dark ? 'text-white' : ''}>Location</Label>
+                  <Label htmlFor="location">Location</Label>
                   <Input
                     id="location"
                     placeholder="City, Country"
-                    className={`mt-2 ${inputTheme}`}
+                    className="mt-2"
                     value={profile.location}
                     onChange={e => setProfile(p => ({ ...p, location: e.target.value }))}
                     aria-label="Location input"
@@ -465,47 +465,8 @@ export default function SettingsPage() {
 
             {/* Appearance & Preferences */}
             <section className={`rounded-xl border p-6 ${containerBg}`}>
-              <h2 className={`text-lg font-semibold ${heading}`}>Appearance & Preferences</h2>
-              <p className={`text-sm mb-4 ${sub}`}>Theme and interaction options</p>
-
-              {/* Theme */}
-              <div className="rounded-lg border border-slate-200/50 p-4 mb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className={`${dark ? 'text-white' : 'text-slate-900'} font-medium`}>Theme</p>
-                    <p className={`text-xs ${sub}`}>Choose how EarthWise looks on this device</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant={theme === 'light' ? 'default' : 'outline'}
-                      onClick={() => setTheme('light')}
-                      className="inline-flex items-center gap-1"
-                      aria-pressed={theme === 'light'}
-                    >
-                      <Sun className="h-4 w-4" /> Light
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={theme === 'dark' ? 'default' : 'outline'}
-                      onClick={() => setTheme('dark')}
-                      className="inline-flex items-center gap-1"
-                      aria-pressed={theme === 'dark'}
-                    >
-                      <Moon className="h-4 w-4" /> Dark
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={theme === 'system' ? 'default' : 'outline'}
-                      onClick={() => setTheme('system')}
-                      className="inline-flex items-center gap-1"
-                      aria-pressed={theme === 'system'}
-                    >
-                      <MonitorCog className="h-4 w-4" /> System
-                    </Button>
-                  </div>
-                </div>
-              </div>
+              <h2 className={`text-lg font-semibold ${heading}`}>Preferences</h2>
+              <p className={`text-sm mb-4 ${sub}`}>Interaction options</p>
 
               {/* Toggles */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -515,7 +476,7 @@ export default function SettingsPage() {
                   checked={prefs.confetti}
                   onCheckedChange={(v) => handleSavePrefs({ confetti: v })}
                   icon={<Sparkles className="h-4 w-4" />}
-                  dark={dark}
+                  dark={false}
                 />
                 <ToggleRow
                   label="Sounds"
@@ -523,7 +484,7 @@ export default function SettingsPage() {
                   checked={prefs.sounds}
                   onCheckedChange={(v) => handleSavePrefs({ sounds: v })}
                   icon={<Volume2 className="h-4 w-4" />}
-                  dark={dark}
+                  dark={false}
                 />
                 <ToggleRow
                   label="Compact layout"
@@ -531,7 +492,7 @@ export default function SettingsPage() {
                   checked={prefs.compact}
                   onCheckedChange={(v) => handleSavePrefs({ compact: v })}
                   icon={<Minimize2 className="h-4 w-4" />}
-                  dark={dark}
+                  dark={false}
                 />
                 <ToggleRow
                   label="Reduce motion"
@@ -539,7 +500,7 @@ export default function SettingsPage() {
                   checked={prefs.reduceMotion}
                   onCheckedChange={(v) => handleSavePrefs({ reduceMotion: v })}
                   icon={<Wind className="h-4 w-4" />}
-                  dark={dark}
+                  dark={false}
                 />
               </div>
 
@@ -556,14 +517,12 @@ export default function SettingsPage() {
               <div className="grid gap-4">
                 {/* Bio */}
                 <div>
-                  <Label htmlFor="bio" className={dark ? 'text-white' : ''}>Bio</Label>
+                  <Label htmlFor="bio">Bio</Label>
                   <textarea
                     id="bio"
                     rows={5}
                     placeholder="A short personal bio..."
-                    className={`mt-2 w-full rounded-md border px-3 py-2 text-sm outline-none ${
-                      dark ? 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400' : 'bg-white border-slate-300'
-                    }`}
+                    className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none"
                     value={profile.bio}
                     onChange={(e) => setProfile(p => ({ ...p, bio: e.target.value }))}
                     aria-label="Bio textarea"
@@ -572,7 +531,7 @@ export default function SettingsPage() {
 
                 {/* Hobbies as chips with close button */}
                 <div>
-                  <Label htmlFor="hobbyInput" className={dark ? 'text-white' : ''}>Hobbies</Label>
+                  <Label htmlFor="hobbyInput">Hobbies</Label>
 
                   {/* Chip list */}
                   {profile.hobbies.length ? (
@@ -580,17 +539,13 @@ export default function SettingsPage() {
                       {profile.hobbies.map((h, i) => (
                         <span
                           key={`${h}-${i}`}
-                          className={`inline-flex items-center rounded-full border px-2 py-1 text-xs ${
-                            dark ? 'bg-slate-800/60 border-slate-700 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-700'
-                          }`}
+                          className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700"
                           aria-label={`Hobby: ${h}`}
                         >
                           <span className="mr-1">{h}</span>
                           <button
                             type="button"
-                            className={`ml-0.5 inline-flex items-center justify-center rounded-full p-0.5 ${
-                              dark ? 'hover:bg-slate-700' : 'hover:bg-slate-200'
-                            }`}
+                            className="ml-0.5 inline-flex items-center justify-center rounded-full p-0.5 hover:bg-slate-200"
                             aria-label={`Remove hobby ${h}`}
                             onClick={() => removeHobby(i)}
                           >
@@ -606,7 +561,7 @@ export default function SettingsPage() {
                     <Input
                       id="hobbyInput"
                       placeholder="Type a hobby and press Enter…"
-                      className={`${inputTheme}`}
+                      className=""
                       value={hobbyInput}
                       onChange={(e) => setHobbyInput(e.target.value)}
                       onKeyDown={onHobbyKeyDown}
@@ -667,16 +622,14 @@ export default function SettingsPage() {
 
               <Separator className="my-4" />
 
-              <Label htmlFor="importText" className={dark ? 'text-white' : ''}>Paste backup JSON</Label>
+              <Label htmlFor="importText">Paste backup JSON</Label>
               <textarea
                 id="importText"
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
                 rows={8}
                 placeholder='{"ew_healthTasks_v1":[...],"ew_dailyLog_v1":{...}}'
-                className={`mt-2 w-full rounded-md border px-3 py-2 text-sm outline-none ${
-                  dark ? 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400' : 'bg-white border-slate-300'
-                }`}
+                className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none"
               />
               <div className="mt-3">
                 <Button type="button" variant="secondary" onClick={handleImportFromText} className="inline-flex items-center gap-2">
@@ -698,7 +651,7 @@ export default function SettingsPage() {
                   actionLabel="Reset completions"
                   icon={<RefreshCw className="h-4 w-4" />}
                   onClick={resetTodaysCompletions}
-                  dark={dark}
+                  dark={false}
                 />
                 <DangerRow
                   title="Reset streak / daily log"
@@ -706,7 +659,7 @@ export default function SettingsPage() {
                   actionLabel="Clear streak"
                   icon={<Database className="h-4 w-4" />}
                   onClick={resetStreak}
-                  dark={dark}
+                  dark={false}
                 />
                 <DangerRow
                   title="Reset task lists"
@@ -714,7 +667,7 @@ export default function SettingsPage() {
                   actionLabel="Reset tasks"
                   icon={<RefreshCw className="h-4 w-4" />}
                   onClick={resetTaskLists}
-                  dark={dark}
+                  dark={false}
                 />
                 <DangerRow
                   title="Full reset"
@@ -723,7 +676,7 @@ export default function SettingsPage() {
                   icon={<Trash2 className="h-4 w-4" />}
                   onClick={fullReset}
                   emphasis
-                  dark={dark}
+                  dark={false}
                 />
               </div>
             </section>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Trophy, Medal } from 'lucide-react';
 import Image from 'next/image';
@@ -8,10 +8,21 @@ import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import PageShell from '@/components/PageShell';
 
-// --- NEW: tiny helpers for geolocation → "City, ST"
+/* Mount helper */
+function useIsMounted() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  return mounted;
+}
+
+/* Keys */
+const LB_POINTS_KEY = 'EW_TODAYS_POINTS_V1';  // carries Monthly Points now
+const LB_DATA_KEY   = 'EW_LEADERBOARD_DATA_V1';
+
+/* Geolocation subtitle bits */
 type Place = { city: string; state: string };
 const DEFAULT_PLACE: Place = { city: 'Princeton', state: 'NJ' };
-const INITIAL_SUBTITLE = 'Top players making a positive impact…'; // first typed text
+const INITIAL_SUBTITLE = 'Top players making a positive impact…';
 
 function toUSPS(name?: string): string | null {
   if (!name) return null;
@@ -61,7 +72,7 @@ async function ipFallback(): Promise<Place | null> {
   }
 }
 
-// --- NEW: simple typewriter hook
+/* Typewriter hook */
 function useTypewriter(text: string, speed = 18) {
   const [display, setDisplay] = useState('');
   useEffect(() => {
@@ -77,31 +88,86 @@ function useTypewriter(text: string, speed = 18) {
   return display;
 }
 
-// Mock leaderboard data (unchanged)
-const leaderboardData = [
-  { id: 1, name: "Alex Chen", score: 2150, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" },
+/* Leaderboard data (mock peers) */
+type LBUser = { id: number; name: string; score: number; avatar: string };
+const leaderboardData: LBUser[] = [
+  { id: 1, name: "Alex Chen",    score: 2150, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" },
   { id: 2, name: "Sarah Miller", score: 1950, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah" },
   { id: 3, name: "James Wilson", score: 1840, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=James" },
-  { id: 4, name: "Emma Davis", score: 1720, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma" },
-  { id: 5, name: "Michael Brown", score: 1680, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael" },
-  { id: 6, name: "Lisa Taylor", score: 1590, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Lisa" },
-  { id: 7, name: "David Park", score: 1520, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=David" },
+  { id: 4, name: "Emma Davis",   score: 1720, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma" },
+  { id: 5, name: "Michael Brown",score: 1680, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael" },
+  { id: 6, name: "Lisa Taylor",  score: 1590, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Lisa" },
+  { id: 7, name: "David Park",   score: 1520, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=David" },
   { id: 8, name: "Rachel Green", score: 1480, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Rachel" },
-  { id: 9, name: "Thomas Lee", score: 1440, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Thomas" },
+  { id: 9, name: "Thomas Lee",   score: 1440, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Thomas" },
   { id: 10, name: "Jessica Kim", score: 1390, avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Jessica" }
 ];
 
 export default function LeaderboardPage() {
-  // Full subtitle text we want to type
   const [fullSubtitle, setFullSubtitle] = useState(INITIAL_SUBTITLE);
-  // Typed version shown in UI
   const typedSubtitle = useTypewriter(fullSubtitle, 16);
 
+  // Publish the static leaderboard so dashboard/sidebar can read it
+  useEffect(() => {
+    try {
+      const compact = leaderboardData.map(({ id, name, score }) => ({ id, name, score }));
+      localStorage.setItem(LB_DATA_KEY, JSON.stringify(compact));
+      // also fire same-tab storage-like event
+      window.dispatchEvent(new StorageEvent('storage', { key: LB_DATA_KEY, newValue: JSON.stringify(compact) }));
+    } catch {}
+  }, []);
+
+  // My score is MONTHLY points only
+  const [myScore, setMyScore] = useState<number>(0);
+
+  // Keep “me” live via both real storage events and a custom event
+  useEffect(() => {
+    const raw = localStorage.getItem(LB_POINTS_KEY);
+    if (raw) {
+      const v = parseInt(raw);
+      if (!Number.isNaN(v)) setMyScore(v);
+    }
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LB_POINTS_KEY && e.newValue) {
+        const v = parseInt(e.newValue);
+        if (!Number.isNaN(v)) setMyScore(v);
+      }
+    };
+    const onCustom = (e: Event) => {
+      const ce = e as CustomEvent<{ points?: number }>;
+      if (typeof ce.detail?.points === 'number') setMyScore(ce.detail.points);
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('leaderboardUpdate', onCustom as EventListener);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('leaderboardUpdate', onCustom as EventListener);
+    };
+  }, []);
+
+  // Insert "You" and compute ranks (monthly-based)
+  const combined = useMemo(() => {
+    const me: LBUser = {
+      id: 0,
+      name: 'You',
+      score: myScore,
+      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=You'
+    };
+    const arr = [...leaderboardData, me];
+    arr.sort((a, b) => b.score - a.score);
+    return arr;
+  }, [myScore]);
+
+  const myIndex = useMemo(() => combined.findIndex((u) => u.id === 0), [combined]);
+  const ahead = myIndex > 0 ? combined[myIndex - 1] : null;
+  const gap = ahead ? Math.max(0, ahead.score - myScore + 1) : 0;
+
+  // subtitle: try location
   useEffect(() => {
     let cancelled = false;
 
     async function detect() {
-      // 1) Try geolocation (short timeout)
       const pos = await new Promise<GeolocationPosition | null>((resolve) => {
         if (!navigator.geolocation) return resolve(null);
         const timer = setTimeout(() => resolve(null), 6000);
@@ -122,30 +188,45 @@ export default function LeaderboardPage() {
 
       const finalPlace = place ?? DEFAULT_PLACE;
       const next = `Top players making a positive impact near you | ${finalPlace.city}, ${finalPlace.state}`;
-      if (!cancelled) setFullSubtitle(next); // re-triggers typing with new text
+      if (!cancelled) setFullSubtitle(next);
     }
 
-    // Start by typing the short intro, then resolve geo + retype final
     detect();
     return () => { cancelled = true; };
   }, []);
+
+  const mounted = useIsMounted();
 
   return (
     <div className="flex min-h-screen bg-gradient-to-b from-emerald-50 via-white to-white">
       <Sidebar />
       <div className="flex-1">
-        {/* Pass the typed string into your existing TopBar (design untouched) */}
-        <TopBar title="Leaderboard" subtitle={typedSubtitle} />
+        <TopBar title="Monthly Leaderboard" subtitle={typedSubtitle} />
         <PageShell className="max-w-6xl mx-auto py-8 px-4">
+          {/* Your position */}
+          <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800">
+            {!mounted ? (
+              <span className="font-medium">Loading your rank…</span>
+            ) : myIndex === 0 ? (
+              <span className="font-medium">You’re #1 on the board — keep it up!</span>
+            ) : (
+              <span className="font-medium">
+                You’re #{myIndex + 1}. You need {gap} pts to pass {ahead?.name} (#{myIndex}).
+              </span>
+            )}
+          </div>
+
           {/* Podium Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-            {leaderboardData.slice(0, 3).map((user, i) => (
+            {combined.slice(0, 3).map((user, i) => (
               <motion.div
-                key={user.id}
+                key={`${user.id}-${user.name}`}
                 initial={{ scale: 0.8, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 transition={{ delay: i * 0.1 }}
-                className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 p-6"
+                className={`bg-white/90 rounded-2xl shadow-sm border p-6 ${
+                  user.id === 0 ? 'border-emerald-300' : 'border-slate-100'
+                }`}
               >
                 <div className="flex items-center justify-between mb-4">
                   <div className="relative w-16 h-16">
@@ -166,14 +247,16 @@ export default function LeaderboardPage() {
                     )}
                   </div>
                 </div>
-                <h3 className="text-lg font-semibold text-slate-900">{user.name}</h3>
+                <h3 className="text-lg font-semibold text-slate-900">
+                  {user.name} {user.id === 0 && <span className="text-emerald-600">(you)</span>}
+                </h3>
                 <p className="text-3xl font-bold text-slate-900 mt-2">{user.score}</p>
                 <p className="text-sm text-slate-500 mt-1">points</p>
               </motion.div>
             ))}
           </div>
 
-          {/* Leaderboard Table */}
+          {/* Table */}
           <div className="bg-white/90 rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <table className="w-full">
               <thead>
@@ -184,10 +267,12 @@ export default function LeaderboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {leaderboardData.map((user, i) => (
+                {combined.map((user, i) => (
                   <tr
-                    key={user.id}
-                    className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors"
+                    key={`${user.id}-${user.name}`}
+                    className={`border-b border-slate-50 last:border-0 transition-colors ${
+                      user.id === 0 ? 'bg-emerald-50/60 hover:bg-emerald-50' : 'hover:bg-slate-50/50'
+                    }`}
                   >
                     <td className="py-4 px-6">
                       <span
@@ -209,7 +294,9 @@ export default function LeaderboardPage() {
                           height={32}
                           className="rounded-full"
                         />
-                        <span className="font-medium text-slate-900">{user.name}</span>
+                        <span className="font-medium text-slate-900">
+                          {user.name} {user.id === 0 && <span className="text-emerald-600">(you)</span>}
+                        </span>
                       </div>
                     </td>
                     <td className="py-4 px-6 text-right">

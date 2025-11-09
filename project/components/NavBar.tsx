@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Leaf, LogIn } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 
 const mainLinks = [
   { href: '/', label: 'Home' },
@@ -15,6 +17,12 @@ const mainLinks = [
   { href: '/settings', label: 'Settings' },
 ];
 
+// Only these are visible to logged-out viewers
+const LOGGED_OUT_ALLOWED = new Set<string>(['/', '/integrations', '/about']);
+
+// Routes that require auth (kept for defensive link routing)
+const PROTECTED = new Set<string>(['/dashboard', '/calendar', '/coach', '/settings']);
+
 function isActive(pathname: string, href: string) {
   if (!pathname) return false;
   if (href === '/') return pathname === '/';
@@ -23,6 +31,34 @@ function isActive(pathname: string, href: string) {
 
 export default function NavBar() {
   const pathname = usePathname();
+  const [ready, setReady] = useState(false);     // avoid flashing wrong menu
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      setIsLoggedIn(!!data.session?.user);
+      setReady(true);
+    })();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      setIsLoggedIn(!!session?.user);
+    });
+
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Hide protected links entirely if logged out
+  const linksToRender = useMemo(() => {
+    if (!ready) return []; // render nothing until we know auth state
+    return isLoggedIn ? mainLinks : mainLinks.filter(l => LOGGED_OUT_ALLOWED.has(l.href));
+  }, [ready, isLoggedIn]);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-200 bg-white/80 backdrop-blur">
@@ -35,13 +71,15 @@ export default function NavBar() {
 
         {/* Main nav */}
         <nav className="hidden md:flex items-center space-x-1">
-          {mainLinks.map(({ href, label }) => {
+          {linksToRender.map(({ href, label }) => {
             const active = isActive(pathname ?? '/', href);
-            
+            const isProtected = PROTECTED.has(href);
+            const linkHref = isProtected && !isLoggedIn ? '/login' : href;
+
             return (
               <Link
                 key={href}
-                href={href}
+                href={linkHref}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
                   'rounded-md px-3 py-2 text-sm font-medium transition-colors',

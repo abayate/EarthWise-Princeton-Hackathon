@@ -15,7 +15,7 @@ import {
   User,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-
+console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
 /* ---------------- Typewriter (no cursor) — used ONLY for the title ---------------- */
 function useTypewriter(
   text: string,
@@ -353,8 +353,8 @@ export default function Page() {
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={{ delay: DELAYS.button, duration: 0.5, ease: 'easeOut' }}
         >
-          <Button asChild size="lg" className="btn-primary text-lg px-8 py-6 h-auto">
-            <Link href="/login">Get Started</Link>
+          <Button asChild size="lg" className="btn-primary text-lg px-8 py-6 h-auto" aria-label="Get Started">
+            <Link href="/signup">Get Started</Link>
           </Button>
         </motion.div>
 

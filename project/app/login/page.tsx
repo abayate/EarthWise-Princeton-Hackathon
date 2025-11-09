@@ -57,6 +57,12 @@ export default function LoginPage() {
     }
   }
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setMessage('Logged out successfully.')
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center">
       <div className="w-96 space-y-4 rounded-lg border p-8 shadow-sm text-center">
@@ -93,6 +99,17 @@ export default function LoginPage() {
             ? 'Sending...'
             : 'Sign Up or Log In'}
         </Button>
+
+        {/* Logout button if already signed in */}
+        {user && (
+          <Button
+            onClick={handleLogout}
+            variant="outline"
+            className="w-full mt-2"
+          >
+            Logout
+          </Button>
+        )}
 
         {/* Message */}
         {message && (
